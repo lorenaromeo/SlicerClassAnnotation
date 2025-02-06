@@ -76,11 +76,14 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.classificationData.clear()
         self.clearTable()
 
-        self.isHierarchical = self.logic.isHierarchicalDataset(datasetPath)
         self.isFlat = self.logic.isFlatDataset(datasetPath)
-        
-        self.loadExistingCSV()
+        self.isHierarchical = self.logic.isHierarchicalDataset(datasetPath)
 
+        if self.isFlat and self.isHierarchical:
+            slicer.util.errorDisplay("Errore: Il dataset contiene sia cartelle che file .nrrd nella cartella principale. Usa solo un formato!", windowTitle="Errore Dataset")
+            return
+
+        self.loadExistingCSV()
         self.loadNextImage()
 
     def loadNextImage(self):
@@ -93,15 +96,38 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.infoDisplay("Tutte le immagini sono già state classificate!", windowTitle="Fine del Dataset")
 
     def loadSingleImage(self, imageData):
-        """Carica una singola immagine e aggiorna lo stato."""
+        """Carica una singola immagine solo se non è già presente nel CSV."""
         patientID, fileName, filePath = imageData
+        csvFilePath = os.path.join(self.datasetPath, "classification_results.csv")
 
+        # Se il CSV esiste, controlla se l'immagine è già classificata
+        if os.path.exists(csvFilePath):
+            try:
+                with open(csvFilePath, mode='r') as file:
+                    reader = csv.reader(file)
+                    next(reader, None)  # Salta l'intestazione
+                    
+                    for row in reader:
+                        if len(row) == 2 and str(row[0]) == f"{patientID}_{fileName.rsplit('.')[0]}":  
+                            slicer.util.warningDisplay(
+                                "Questa immagine è già stata classificata. Nessuna immagine caricata.",
+                                windowTitle="Avviso"
+                            )
+                            return None  # Non carica nulla se l'immagine è già stata classificata
+            
+            except Exception as e:
+                slicer.util.errorDisplay(f"Errore nella lettura del CSV: {str(e)}", windowTitle="Errore")
+                return None  # Esce se c'è un errore nella lettura del CSV
+
+        # Se l'immagine non è già stata classificata, la carica
         volumeNode = slicer.util.loadVolume(filePath)
         if volumeNode:
             self.loadedImages = [volumeNode]
             self.currentImageIndex = 0
             slicer.util.setSliceViewerLayers(background=volumeNode)
-            slicer.util.infoDisplay(f"Caricata immagine: {fileName}" + (f" (Paziente: {patientID})" if patientID else ""), windowTitle="Immagine Caricata")
+            slicer.util.infoDisplay(f"Caricata immagine: {fileName}" + 
+                                    (f" (Paziente: {patientID})" if patientID else ""), 
+                                    windowTitle="Immagine Caricata")
         else:
             slicer.util.errorDisplay(f"Errore nel caricamento dell'immagine {filePath}", windowTitle="Errore")
 
@@ -134,12 +160,12 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             return
 
         currentVolume = self.loadedImages[self.currentImageIndex]
-        formattedName = self.logic.getFormattedName(currentVolume, self.isHierarchical)
+        formattedName = self.logic.getFormattedName(currentVolume, self.isHierarchical, self.isFlat)
 
         self.classificationData[formattedName] = classLabel
         self.updateTable()
         self.logic.saveClassificationData(self.datasetPath, self.classificationData)
-
+        slicer.mrmlScene.Clear(0)
         self.loadNextImage()
 
     def updateTable(self):
@@ -158,31 +184,47 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
     """Logica del modulo, separata dall'interfaccia grafica."""
 
     def isHierarchicalDataset(self, datasetPath):
-        """Determina se il dataset è gerarchico (cartelle per ogni paziente)."""
-        return any(os.path.isdir(os.path.join(datasetPath, d)) for d in os.listdir(datasetPath))
+        """Determina se il dataset è gerarchico (se contiene cartelle con file .nrrd all'interno)."""
+        if self.isFlatDataset(datasetPath):  
+            return False
+
+        subdirs = [d for d in os.listdir(datasetPath) if os.path.isdir(os.path.join(datasetPath, d))]
+
+        for subdir in subdirs:
+            subdirPath = os.path.join(datasetPath, subdir)
+            if any(f.endswith(".nrrd") for f in os.listdir(subdirPath)): 
+                return True
+
+        return False 
     
     def isFlatDataset(self, datasetPath):
-        """Determina se il dataset è piatto (tutti i file .nrrd sono nella cartella principale)."""
-        return all(os.path.isfile(os.path.join(datasetPath, f)) and f.endswith(".nrrd") for f in os.listdir(datasetPath))
+        """Determina se il dataset è piatto (ha file .nrrd nella cartella principale, indipendentemente da cartelle di output)."""
+        files = [f for f in os.listdir(datasetPath) if os.path.isfile(os.path.join(datasetPath, f))]  
+        hasNRRD = any(f.endswith(".nrrd") for f in files) 
+
+        return hasNRRD 
 
     def getNextImage(self, datasetPath, lastPatient):
-        """Restituisce la prossima immagine da classificare."""
+        """Restituisce la prossima immagine da classificare, gestendo sia dataset gerarchici che piatti."""
         allImages = []
+        isHierarchical = self.isHierarchicalDataset(datasetPath)
 
         for root, _, files in os.walk(datasetPath):
             for file in sorted(files):
                 if file.endswith(".nrrd"):
-                    allImages.append((os.path.basename(root), file, os.path.join(root, file)))
+                    parentFolder = os.path.basename(root) if isHierarchical else None  
+                    allImages.append((parentFolder, file, os.path.join(root, file)))
 
         if not allImages:
             return None
 
         if lastPatient:
-            lastIndex = next((i for i, (p, f, path) in enumerate(allImages) if f"{p}_{os.path.splitext(f)[0]}" == lastPatient), None)
+            lastIndex = next((i for i, (p, f, path) in enumerate(allImages) 
+                            if (f"{p}_{os.path.splitext(f)[0]}" == lastPatient if p else os.path.splitext(f)[0] == lastPatient)), None)
             if lastIndex is not None and lastIndex < len(allImages) - 1:
                 return allImages[lastIndex + 1]
-        
-        return allImages[0]
+
+        return allImages[0]  
 
     def getLastPatientFromCSV(self, datasetPath):
         """Restituisce l'ultimo paziente classificato dal CSV."""
@@ -222,11 +264,17 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
 
         return classificationData
 
-    def getFormattedName(self, volumeNode, isHierarchical):
+    def getFormattedName(self, volumeNode, isHierarchical, isFlat):
         """Genera il nome formattato per la classificazione."""
         filePath = volumeNode.GetStorageNode().GetFileName()
         fileName = os.path.splitext(os.path.basename(filePath))[0]
-        return f"{os.path.basename(os.path.dirname(filePath))}_{fileName}" if isHierarchical else fileName
+
+        if isHierarchical:
+            return f"{os.path.basename(os.path.dirname(filePath))}_{fileName}"  
+        elif isFlat:
+            return fileName  
+        else:
+            return fileName  
     
     def saveClassificationData(self, datasetPath, classificationData):
         """Salva i dati di classificazione in un file CSV."""
