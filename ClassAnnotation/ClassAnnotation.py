@@ -100,24 +100,29 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         patientID, fileName, filePath = imageData
         csvFilePath = os.path.join(self.datasetPath, "classification_results.csv")
 
+        if patientID:
+            imageID = f"{patientID}_{fileName.rsplit('.', 1)[0]}"
+        else: 
+            imageID = fileName.rsplit('.', 1)[0]
+
         # Se il CSV esiste, controlla se l'immagine è già classificata
         if os.path.exists(csvFilePath):
             try:
                 with open(csvFilePath, mode='r') as file:
                     reader = csv.reader(file)
-                    next(reader, None)  # Salta l'intestazione
+                    next(reader, None) 
                     
                     for row in reader:
-                        if len(row) == 2 and str(row[0]) == f"{patientID}_{fileName.rsplit('.')[0]}":  
+                        if len(row) == 2 and str(row[0]) == imageID:  
                             slicer.util.warningDisplay(
                                 "Questa immagine è già stata classificata. Nessuna immagine caricata.",
                                 windowTitle="Avviso"
                             )
-                            return None  # Non carica nulla se l'immagine è già stata classificata
-            
+                            return None  
+                
             except Exception as e:
                 slicer.util.errorDisplay(f"Errore nella lettura del CSV: {str(e)}", windowTitle="Errore")
-                return None  # Esce se c'è un errore nella lettura del CSV
+                return None
 
         # Se l'immagine non è già stata classificata, la carica
         volumeNode = slicer.util.loadVolume(filePath)
@@ -206,23 +211,29 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
 
     def getNextImage(self, datasetPath, lastPatient):
         """Restituisce la prossima immagine da classificare, gestendo sia dataset gerarchici che piatti."""
+        
+        # Determina se il dataset è gerarchico o piatto
+        self.isHierarchical = self.isHierarchicalDataset(datasetPath)
+        self.isFlat = self.isFlatDataset(datasetPath)
+
         allImages = []
-        isHierarchical = self.isHierarchicalDataset(datasetPath)
 
         for root, _, files in os.walk(datasetPath):
             for file in sorted(files):
                 if file.endswith(".nrrd"):
-                    parentFolder = os.path.basename(root) if isHierarchical else None  
+                    parentFolder = os.path.basename(root) if self.isHierarchical else None  
                     allImages.append((parentFolder, file, os.path.join(root, file)))
 
         if not allImages:
-            return None
-
+            return None  
+        
+        # Se c'è un'ultima immagine classificata, cerchiamo la prossima
         if lastPatient:
             lastIndex = next((i for i, (p, f, path) in enumerate(allImages) 
                             if (f"{p}_{os.path.splitext(f)[0]}" == lastPatient if p else os.path.splitext(f)[0] == lastPatient)), None)
+
             if lastIndex is not None and lastIndex < len(allImages) - 1:
-                return allImages[lastIndex + 1]
+                return allImages[lastIndex + 1]  
 
         return allImages[0]  
 
