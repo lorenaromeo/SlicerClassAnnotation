@@ -59,6 +59,8 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.class3Button.clicked.connect(lambda: self.onClassifyImage(3))
         self.ui.class4Button.clicked.connect(lambda: self.onClassifyImage(4))
 
+        self.ui.reviewButton.clicked.connect(self.onReviewPatientClicked)
+
         self.ui.classificationTable.setColumnCount(2)
         self.ui.classificationTable.setHorizontalHeaderLabels(["Patient ID", "Class"])
         self.ui.classificationTable.horizontalHeader().setStretchLastSection(True)
@@ -86,6 +88,8 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Aggiorna la tabella con il CSV esistente
         self.loadExistingCSV()
 
+        self.populatePatientDropdown()
+
         # Controlla se ci sono ancora pazienti non classificati
         nextPatient = self.logic.getNextPatient(self.datasetPath)
 
@@ -94,19 +98,37 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         else:
             slicer.util.infoDisplay("✔️ Tutti i pazienti sono stati classificati! Dati aggiornati dalla tabella.", windowTitle="Fine del Dataset")
 
+    def onReviewPatientClicked(self):
+        """Carica il paziente selezionato dal menu a tendina."""
+        patientID = self.ui.patientDropdown.currentText
+
+        if patientID == "Select a patient to review":
+            slicer.util.errorDisplay("⚠️ Nessun paziente selezionato per la revisione!", windowTitle="Errore")
+            return
+
+        patientFiles = self.logic.getPatientFilesForReview(self.datasetPath, patientID, self.isHierarchical)
+
+        if patientFiles:
+            slicer.mrmlScene.Clear(0)  # Pulisce la scena
+            self.loadPatientImages((patientID, patientFiles))  # Carica le immagini
+        else:
+            slicer.util.errorDisplay(f"⚠️ Nessuna immagine trovata per il paziente {patientID}!", windowTitle="Errore")
+
     def loadNextPatient(self):
         """Carica il prossimo paziente disponibile nel dataset."""
+
         nextPatient = self.logic.getNextPatient(self.datasetPath)
 
         if nextPatient:
             patientID, fileList = nextPatient
+            
             self.currentPatientIndex += 1  # Passa al paziente successivo
             slicer.mrmlScene.Clear(0)  # Pulisce la scena prima di caricare il nuovo paziente
             self.loadPatientImages((patientID, fileList))
         else:
             slicer.mrmlScene.Clear(0)  # Se tutti i pazienti sono classificati, svuota la scena
             slicer.util.infoDisplay("✔️ Tutti i pazienti sono stati classificati!", windowTitle="Fine del Dataset")
-
+            
     def loadPatientImages(self, patientData):
         """Carica tutte le immagini di un paziente."""
         patientID, fileList = patientData
@@ -131,11 +153,11 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         firstVolume = self.loadedPatients[0]
         filePath = firstVolume.GetStorageNode().GetFileName()
         
-        # 🔹 Dataset gerarchico: il paziente è la cartella padre
+        # Dataset gerarchico: il paziente è la cartella padre
         if self.isHierarchical:
             patientID = os.path.basename(os.path.dirname(filePath))
 
-        # 🔹 Dataset flat: il paziente è la radice del nome file
+        # Dataset flat: il paziente è la radice del nome file
         else:
             patientID = os.path.basename(filePath).split("_")[0]
 
@@ -146,6 +168,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.classificationData[patientID] = classLabel
         self.updateTable()
         self.logic.saveClassificationData(self.datasetPath, self.classificationData)
+        self.populatePatientDropdown()
         slicer.mrmlScene.Clear(0)
         self.loadNextPatient()
 
@@ -184,6 +207,23 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         except Exception as e:
             slicer.util.errorDisplay(f"Errore nella lettura del CSV: {str(e)}", windowTitle="Errore")
 
+    def populatePatientDropdown(self):
+        """Aggiorna il menu a tendina con i pazienti classificati."""
+        self.ui.patientDropdown.clear()  # Pulisce il menu
+
+        # Aggiungi messaggio iniziale
+        self.ui.patientDropdown.addItem("Select a patient to review")
+
+        classifiedPatients = self.logic.loadExistingCSV(self.datasetPath)  # Legge i pazienti classificati
+
+        # Se non ci sono pazienti classificati, esci
+        if not classifiedPatients:
+            return  
+
+        # Aggiunge gli ID dei pazienti al menu a tendina
+        for patientID in sorted(classifiedPatients):
+            self.ui.patientDropdown.addItem(patientID)
+
     def lastPatientCSV(self):
         """Restituisce l'ultimo paziente classificato dal CSV."""
         return self.logic.getLastPatientFromCSV(self.datasetPath)
@@ -203,11 +243,11 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
 
     def getNextPatient(self, datasetPath: str) -> Optional[Tuple[str, List[str]]]:
         """Restituisce il prossimo paziente da classificare, escludendo i pazienti già classificati."""
-        
+
         self.isHierarchical = self.isHierarchicalDataset(datasetPath)
         self.isFlat = self.isFlatDataset(datasetPath)
 
-        # 🔹 1️⃣ Se è un dataset gerarchico
+        # Se è un dataset gerarchico
         if self.isHierarchical:
             patientDirs = sorted([
                 d for d in os.listdir(datasetPath) 
@@ -226,7 +266,7 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
 
             return None  # Nessun paziente disponibile
 
-        # 🔹 2️⃣ Se è un dataset flat, raggruppa i file per ID paziente
+        # Se è un dataset flat
         elif self.isFlat:
             allFiles = sorted([
                 f for f in os.listdir(datasetPath) 
@@ -236,12 +276,11 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
             if not allFiles:
                 return None  # Nessun file disponibile
 
-            csvExists = os.path.exists(os.path.join(datasetPath, "classification_results.csv"))
-            classifiedPatients = self.loadExistingCSV(datasetPath) if csvExists else []
+            classifiedPatients = self.loadExistingCSV(datasetPath)
 
             patientGroups = {}  # Raggruppiamo i file per ID paziente
             for fileName in allFiles:
-                patientID = fileName.split("_")[0]  # Estraggo la radice (ID paziente)
+                patientID = fileName.split("_")[0]  # Estrai la radice (ID paziente)
                 if patientID not in patientGroups:
                     patientGroups[patientID] = []
                 patientGroups[patientID].append(os.path.join(datasetPath, fileName))
@@ -277,8 +316,17 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
     
     def getPatientFiles(self, patientPath: str) -> List[str]:
         """Restituisce la lista di file di un paziente, escludendo la cartella output."""
-        return [os.path.join(patientPath, f) for f in os.listdir(patientPath) 
-                if f.endswith(tuple(SUPPORTED_FORMATS))]
+
+        if not os.path.exists(patientPath):
+            return []
+
+        files = [
+            os.path.join(patientPath, f)
+            for f in os.listdir(patientPath)
+            if f.endswith(tuple(SUPPORTED_FORMATS))
+        ]
+
+        return files
 
     def getFormattedName(self, volumeNode, isHierarchical: bool, isFlat: bool) -> Optional[str]:
         """Genera il nome formattato per il paziente."""
@@ -388,3 +436,19 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
         except Exception as e:
             slicer.util.errorDisplay(f"Errore nella lettura del CSV: {str(e)}", windowTitle="Errore")
             return None
+        
+    def getPatientFilesForReview(self, datasetPath: str, patientID: str, isHierarchical: bool) -> List[str]:
+            """Trova le immagini di un paziente già classificato."""
+            patientFiles = []
+
+            if isHierarchical:
+                patientPath = os.path.join(datasetPath, patientID)
+                if os.path.exists(patientPath):
+                    patientFiles = [os.path.join(patientPath, f) for f in os.listdir(patientPath) if f.endswith(tuple(SUPPORTED_FORMATS))]
+            else:
+                # Dataset flat: trova tutti i file che iniziano con il patientID
+                for file in os.listdir(datasetPath):
+                    if file.startswith(patientID) and file.endswith(tuple(SUPPORTED_FORMATS)):
+                        patientFiles.append(os.path.join(datasetPath, file))
+
+            return patientFiles

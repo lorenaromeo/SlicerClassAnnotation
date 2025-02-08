@@ -126,7 +126,7 @@
     </widget>
    </item>
    <item>
-    <widget class="QLineEdit" name="reviewInput"/>
+    <widget class="QComboBox" name="patientDropdown"/>
    </item>
    <item>
     <widget class="QPushButton" name="reviewButton">
