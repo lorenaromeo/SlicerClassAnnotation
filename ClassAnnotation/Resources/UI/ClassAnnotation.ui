@@ -14,22 +14,27 @@
    </rect>
   </property>
   <property name="sizePolicy">
-   <sizepolicy hsizetype="Expanding" vsizetype="Expanding"/>
+   <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+    <horstretch>0</horstretch>
+    <verstretch>0</verstretch>
+   </sizepolicy>
   </property>
-
-  <!-- Layout principale -->
   <layout class="QVBoxLayout" name="mainLayout">
-
-   <!-- Scroll Area principale -->
    <item>
     <widget class="QScrollArea" name="scrollArea">
      <property name="widgetResizable">
       <bool>true</bool>
      </property>
      <widget class="QWidget" name="scrollAreaWidgetContents">
+      <property name="geometry">
+       <rect>
+        <x>0</x>
+        <y>-54</y>
+        <width>759</width>
+        <height>646</height>
+       </rect>
+      </property>
       <layout class="QVBoxLayout" name="scrollLayout">
-
-       <!-- Bottone per caricare il dataset -->
        <item>
         <widget class="QPushButton" name="loadButton">
          <property name="text">
@@ -37,110 +42,99 @@
          </property>
         </widget>
        </item>
-
-       <!-- Tabella con dataset (Non modificabile) -->
        <item>
         <widget class="QTableWidget" name="classificationTable">
          <property name="sizePolicy">
-          <sizepolicy hsizetype="Expanding" vsizetype="Expanding"/>
+          <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
          </property>
          <property name="editTriggers">
-          <enum>QAbstractItemView.NoEditTriggers</enum>
+          <set>QAbstractItemView::NoEditTriggers</set>
          </property>
         </widget>
        </item>
-
-       <!-- Sezione per classificazione con 5 classi -->
        <item>
         <widget class="QGroupBox" name="classificationGroupBox">
          <property name="title">
           <string>Classification</string>
          </property>
          <layout class="QGridLayout" name="classificationLayout">
-         
           <item row="0" column="0">
            <widget class="QPushButton" name="class0Button">
-            <property name="text">
-             <string>Class 0</string>
-            </property>
             <property name="styleSheet">
              <string>background-color: #FF4C4C; color: black;</string>
+            </property>
+            <property name="text">
+             <string>Class 0</string>
             </property>
            </widget>
           </item>
           <item row="0" column="1">
            <widget class="QLCDNumber" name="lcdClass0"/>
           </item>
-
           <item row="1" column="0">
            <widget class="QPushButton" name="class1Button">
-            <property name="text">
-             <string>Class 1</string>
-            </property>
             <property name="styleSheet">
              <string>background-color: #4CAF50; color: black;</string>
+            </property>
+            <property name="text">
+             <string>Class 1</string>
             </property>
            </widget>
           </item>
           <item row="1" column="1">
            <widget class="QLCDNumber" name="lcdClass1"/>
           </item>
-
           <item row="2" column="0">
            <widget class="QPushButton" name="class2Button">
-            <property name="text">
-             <string>Class 2</string>
-            </property>
             <property name="styleSheet">
              <string>background-color: #FF9800; color: black;</string>
+            </property>
+            <property name="text">
+             <string>Class 2</string>
             </property>
            </widget>
           </item>
           <item row="2" column="1">
            <widget class="QLCDNumber" name="lcdClass2"/>
           </item>
-
           <item row="3" column="0">
            <widget class="QPushButton" name="class3Button">
-            <property name="text">
-             <string>Class 3</string>
-            </property>
             <property name="styleSheet">
              <string>background-color: #FFD700; color: black;</string>
+            </property>
+            <property name="text">
+             <string>Class 3</string>
             </property>
            </widget>
           </item>
           <item row="3" column="1">
            <widget class="QLCDNumber" name="lcdClass3"/>
           </item>
-
           <item row="4" column="0">
            <widget class="QPushButton" name="class4Button">
-            <property name="text">
-             <string>Class 4</string>
-            </property>
             <property name="styleSheet">
              <string>background-color: #2196F3; color: black;</string>
+            </property>
+            <property name="text">
+             <string>Class 4</string>
             </property>
            </widget>
           </item>
           <item row="4" column="1">
            <widget class="QLCDNumber" name="lcdClass4"/>
           </item>
-
          </layout>
         </widget>
        </item>
-
-       <!-- Sezione Review con Scroll Area -->
        <item>
         <widget class="QGroupBox" name="reviewGroupBox">
          <property name="title">
           <string>Review</string>
          </property>
          <layout class="QVBoxLayout" name="reviewLayout">
-          
-          <!-- Automatic Review -->
           <item>
            <widget class="QGroupBox" name="automaticReviewGroupBox">
             <property name="title">
@@ -157,7 +151,7 @@
              <item>
               <widget class="QLineEdit" name="casesInput">
                <property name="placeholderText">
-                <string>(i.e. 0)</string>
+                <string/>
                </property>
               </widget>
              </item>
@@ -168,18 +162,16 @@
                </property>
               </widget>
              </item>
-	     <item>
- 		<widget class="QPushButton" name="nextPatientButton">
- 		 <property name="text">
-   		   <string>Next Patient</string>
-  		 </property>
- 		</widget>
-	     </item>
+             <item>
+              <widget class="QPushButton" name="nextPatientButton">
+               <property name="text">
+                <string>Next Patient</string>
+               </property>
+              </widget>
+             </item>
             </layout>
            </widget>
           </item>
-
-          <!-- Manual Review -->
           <item>
            <widget class="QGroupBox" name="manualReviewGroupBox">
             <property name="title">
@@ -206,18 +198,23 @@
             </layout>
            </widget>
           </item>
-
          </layout>
         </widget>
        </item>
-
       </layout>
      </widget>
     </widget>
    </item>
-
   </layout>
  </widget>
+ <customwidgets>
+  <customwidget>
+   <class>qMRMLWidget</class>
+   <extends>QWidget</extends>
+   <header>qmrmlwidget.h</header>
+   <container>1</container>
+  </customwidget>
+ </customwidgets>
  <resources/>
  <connections/>
 </ui>
