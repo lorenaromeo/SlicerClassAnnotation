@@ -12,6 +12,7 @@ import slicer
 from slicer.ScriptedLoadableModule import *
 from slicer.util import VTKObservationMixin
 import random
+import numpy as np
 
 SUPPORTED_FORMATS = [".nrrd", ".nii", ".nii.gz", ".dcm", ".DCM"]
 
@@ -112,6 +113,9 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.currentPatientIndex = 0
         self.classificationData.clear()
         self.clearTable()
+
+        self.randomPatientsList = []
+        self.currentRandomPatientIndex = 0
 
         self.isFlat = self.logic.isFlatDataset(self.datasetPath)
         self.isHierarchical = self.logic.isHierarchicalDataset(self.datasetPath)
@@ -264,7 +268,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def loadPatientImages(self, patientData):
         """Carica tutte le immagini di un paziente rispettando la gestione DICOM e altri formati."""
-        
+
         patientID, fileList = patientData
         self.loadedPatients = []
         self.currentPatientID = patientID  
@@ -275,7 +279,13 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         dicomFiles = [f for f in fileList if f.lower().endswith(dicomExtensions)]
         otherFiles = [f for f in fileList if f.lower().endswith(otherExtensions)]
 
+        hasVolume = False
+        volumeNode = None  
+        segmentationFiles = []
+        volumeFiles = []
+
         try:
+   
             if dicomFiles:
                 dicomDir = os.path.dirname(dicomFiles[0])  
                 reader = sitk.ImageSeriesReader()
@@ -283,26 +293,82 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 reader.SetFileNames(dicomSeries)
                 sitkImage = reader.Execute()  
 
-                # Creiamo un nodo volume per il DICOM con il nome del paziente
                 volumeNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode")
                 volumeNode.SetName(f"{patientID}_DICOM") 
                 sitkUtils.PushVolumeToSlicer(sitkImage, volumeNode)
 
                 if volumeNode:
                     self.loadedPatients.append(volumeNode)
+                    hasVolume = True
+
 
             for filePath in otherFiles:
                 try:
+                    sitkImage = sitk.ReadImage(filePath) 
+                    numpyImage = sitk.GetArrayFromImage(sitkImage).astype(np.float32)  
+
+                    # Converto in uint8 e poi di nuovo in float32
+                    numpyImage_uint8 = numpyImage.astype(np.uint8)
+                    numpyImage_uint8[numpyImage_uint8 >= 120] = 120  
+                    numpyImage_float32 = numpyImage_uint8.astype(np.float32)
+
+                    if np.sum(numpyImage == numpyImage_float32) == np.prod(numpyImage.shape):
+                        segmentationFiles.append(filePath)
+                    else:
+                        volumeFiles.append(filePath)
+
+                except Exception as e:
+                    slicer.util.errorDisplay(f"❌ Errore nella lettura di {filePath}: {str(e)}", windowTitle="Errore")
+
+
+            for filePath in volumeFiles:
+                try:
                     sitkImage = sitk.ReadImage(filePath)  
+                    
                     volumeNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode")
                     volumeNode.SetName(f"{patientID}_{os.path.basename(filePath)}") 
                     sitkUtils.PushVolumeToSlicer(sitkImage, volumeNode)
 
                     if volumeNode:
                         self.loadedPatients.append(volumeNode)
+                        hasVolume = True  
 
                 except Exception as e:
-                    slicer.util.errorDisplay(f"❌ Errore nel caricamento di {filePath}: {str(e)}", windowTitle="Errore")
+                    slicer.util.errorDisplay(f"❌ Errore nel caricamento del volume {filePath}: {str(e)}", windowTitle="Errore")
+
+            existingSegmentationNode = slicer.mrmlScene.GetFirstNodeByName(f"{patientID}_Segmentation")
+
+            if hasVolume:
+                if not existingSegmentationNode:
+                    segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
+                    segmentationNode.SetName(f"{patientID}_Segmentation")
+                    
+                else:
+                    segmentationNode = existingSegmentationNode
+
+            for filePath in segmentationFiles:
+                try:
+                    sitkImage = sitk.ReadImage(filePath)  
+                    sitkLabelMap = sitk.Cast(sitkImage, sitk.sitkUInt8)
+
+                    if hasVolume:
+               
+                        labelmapVolumeNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+                        sitkUtils.PushVolumeToSlicer(sitkLabelMap, labelmapVolumeNode)  
+
+                        slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(labelmapVolumeNode, segmentationNode)
+                        slicer.mrmlScene.RemoveNode(labelmapVolumeNode)  
+                        self.loadedPatients.append(segmentationNode)
+
+                    else:
+           
+                        labelmapVolumeNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+                        labelmapVolumeNode.SetName(f"{patientID}_LabelMap")
+                        sitkUtils.PushVolumeToSlicer(sitkLabelMap, labelmapVolumeNode)
+                        self.loadedPatients.append(labelmapVolumeNode)
+
+                except Exception as e:
+                    slicer.util.errorDisplay(f"❌ Errore nel caricamento della segmentazione {filePath}: {str(e)}", windowTitle="Errore")
 
         except Exception as e:
             slicer.util.errorDisplay(f"❌ Errore generale nel caricamento del paziente {patientID}: {str(e)}", windowTitle="Errore")
@@ -389,7 +455,9 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.ui.patientDropdown.addItem("Select a patient to review")
 
-        classifiedPatients = self.logic.loadExistingCSV(self.datasetPath) 
+        patients = self.logic.loadExistingCSV(self.datasetPath) 
+        classifiedPatients = {patientID: classLabel for patientID, classLabel in patients.items() if classLabel is not None}
+
         if not classifiedPatients:
             return  
 
@@ -405,7 +473,7 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
 
     def isFlatDataset(self, datasetPath: str) -> bool:
         """Determina se il dataset è flat (tutti i file nella cartella principale)."""
-        files = [f for f in os.listdir(datasetPath) if os.path.isfile(os.path.join(datasetPath, f))]
+        files = [f for f in os.listdir(datasetPath) if os.path.isfile(os.path.join(datasetPath, f)) and not f.startswith('.') and f!= 'classification_results.csv']
         return any(f.endswith(tuple(SUPPORTED_FORMATS)) for f in files)
 
     def isHierarchicalDataset(self, datasetPath: str) -> bool:
@@ -674,13 +742,14 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
         patientIDs = set()
 
         if self.isHierarchicalDataset(datasetPath):
-            patientIDs = {d for d in os.listdir(datasetPath) if os.path.isdir(os.path.join(datasetPath, d)) and d.lower() != "output"}
+            patientIDs = {d for d in os.listdir(datasetPath) if os.path.isdir(os.path.join(datasetPath, d)) 
+                        and d.lower() != "output" and not d.startswith('.')}
 
         elif self.isFlatDataset(datasetPath):
-
-            allFiles = [f for f in os.listdir(datasetPath) if os.path.isfile(os.path.join(datasetPath, f))]
+            allFiles = [f for f in os.listdir(datasetPath) if os.path.isfile(os.path.join(datasetPath, f)) 
+                        and f.lower() != "output" and not f.startswith('.') and f != 'classification_results.csv']
             for fileName in allFiles:
-                patientID = fileName.split("_")[0] 
+                patientID = fileName.split("_")[0]  
                 patientIDs.add(patientID)
 
         return sorted(patientIDs)
