@@ -13,12 +13,6 @@
     <height>600</height>
    </rect>
   </property>
-  <property name="sizePolicy">
-   <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
-    <horstretch>0</horstretch>
-    <verstretch>0</verstretch>
-   </sizepolicy>
-  </property>
   <layout class="QVBoxLayout" name="mainLayout">
    <item>
     <widget class="QScrollArea" name="scrollArea">
@@ -29,30 +23,68 @@
       <property name="geometry">
        <rect>
         <x>0</x>
-        <y>-54</y>
+        <y>-511</y>
         <width>759</width>
-        <height>646</height>
+        <height>1085</height>
        </rect>
       </property>
       <layout class="QVBoxLayout" name="scrollLayout">
        <item>
-        <widget class="QPushButton" name="loadButton">
-         <property name="text">
-          <string>Select Dataset</string>
+        <widget class="QGroupBox" name="inputGroupBox">
+         <property name="title">
+          <string>Input</string>
          </property>
+         <layout class="QVBoxLayout" name="inputLayout">
+          <item>
+           <widget class="QPushButton" name="loadButton">
+            <property name="text">
+             <string>Select Data Folder</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="labelInputPath">
+            <property name="text">
+             <string>Input Folder Path:</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="labelOutputPath">
+            <property name="text">
+             <string>Output Folder Path:</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
         </widget>
        </item>
        <item>
-        <widget class="QTableWidget" name="classificationTable">
-         <property name="sizePolicy">
-          <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
-           <horstretch>0</horstretch>
-           <verstretch>0</verstretch>
-          </sizepolicy>
+        <widget class="QGroupBox" name="datasetOverviewGroupBox">
+         <property name="title">
+          <string>Dataset Overview</string>
          </property>
-         <property name="editTriggers">
-          <set>QAbstractItemView::NoEditTriggers</set>
-         </property>
+         <layout class="QVBoxLayout" name="datasetOverviewLayout">
+          <item>
+           <widget class="QTableWidget" name="classificationTable">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Expanding" vsizetype="Minimum">
+              <horstretch>0</horstretch>
+              <verstretch>2</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="maximumSize">
+             <size>
+              <width>16777215</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="editTriggers">
+             <set>QAbstractItemView::NoEditTriggers</set>
+            </property>
+           </widget>
+          </item>
+         </layout>
         </widget>
        </item>
        <item>
@@ -60,71 +92,85 @@
          <property name="title">
           <string>Classification</string>
          </property>
-         <layout class="QGridLayout" name="classificationLayout">
-          <item row="0" column="0">
-           <widget class="QPushButton" name="class0Button">
-            <property name="styleSheet">
-             <string>background-color: #FF4C4C; color: black;</string>
-            </property>
-            <property name="text">
-             <string>Class 0</string>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="1">
-           <widget class="QLCDNumber" name="lcdClass0"/>
-          </item>
-          <item row="1" column="0">
-           <widget class="QPushButton" name="class1Button">
-            <property name="styleSheet">
-             <string>background-color: #4CAF50; color: black;</string>
-            </property>
-            <property name="text">
-             <string>Class 1</string>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="1">
-           <widget class="QLCDNumber" name="lcdClass1"/>
-          </item>
-          <item row="2" column="0">
-           <widget class="QPushButton" name="class2Button">
-            <property name="styleSheet">
-             <string>background-color: #FF9800; color: black;</string>
-            </property>
-            <property name="text">
-             <string>Class 2</string>
-            </property>
-           </widget>
-          </item>
-          <item row="2" column="1">
-           <widget class="QLCDNumber" name="lcdClass2"/>
-          </item>
-          <item row="3" column="0">
-           <widget class="QPushButton" name="class3Button">
-            <property name="styleSheet">
-             <string>background-color: #FFD700; color: black;</string>
-            </property>
-            <property name="text">
-             <string>Class 3</string>
-            </property>
-           </widget>
-          </item>
-          <item row="3" column="1">
-           <widget class="QLCDNumber" name="lcdClass3"/>
-          </item>
-          <item row="4" column="0">
-           <widget class="QPushButton" name="class4Button">
-            <property name="styleSheet">
-             <string>background-color: #2196F3; color: black;</string>
-            </property>
-            <property name="text">
-             <string>Class 4</string>
-            </property>
-           </widget>
-          </item>
-          <item row="4" column="1">
-           <widget class="QLCDNumber" name="lcdClass4"/>
+         <layout class="QVBoxLayout" name="classificationMainLayout">
+          <item>
+           <layout class="QGridLayout" name="classificationLayout">
+            <item row="0" column="1">
+             <widget class="QLabel" name="labelCurrentCases">
+              <property name="text">
+               <string>Current Cases per Class</string>
+              </property>
+              <property name="alignment">
+               <set>Qt::AlignCenter</set>
+              </property>
+             </widget>
+            </item>
+            <item row="1" column="0">
+             <widget class="QPushButton" name="class0Button">
+              <property name="styleSheet">
+               <string>background-color: #FF4C4C; color: black;</string>
+              </property>
+              <property name="text">
+               <string>Class 0</string>
+              </property>
+             </widget>
+            </item>
+            <item row="1" column="1">
+             <widget class="QLCDNumber" name="lcdClass0"/>
+            </item>
+            <item row="2" column="0">
+             <widget class="QPushButton" name="class1Button">
+              <property name="styleSheet">
+               <string>background-color: #4CAF50; color: black;</string>
+              </property>
+              <property name="text">
+               <string>Class 1</string>
+              </property>
+             </widget>
+            </item>
+            <item row="2" column="1">
+             <widget class="QLCDNumber" name="lcdClass1"/>
+            </item>
+            <item row="3" column="0">
+             <widget class="QPushButton" name="class2Button">
+              <property name="styleSheet">
+               <string>background-color: #FF9800; color: black;</string>
+              </property>
+              <property name="text">
+               <string>Class 2</string>
+              </property>
+             </widget>
+            </item>
+            <item row="3" column="1">
+             <widget class="QLCDNumber" name="lcdClass2"/>
+            </item>
+            <item row="4" column="0">
+             <widget class="QPushButton" name="class3Button">
+              <property name="styleSheet">
+               <string>background-color: #FFD700; color: black;</string>
+              </property>
+              <property name="text">
+               <string>Class 3</string>
+              </property>
+             </widget>
+            </item>
+            <item row="4" column="1">
+             <widget class="QLCDNumber" name="lcdClass3"/>
+            </item>
+            <item row="5" column="0">
+             <widget class="QPushButton" name="class4Button">
+              <property name="styleSheet">
+               <string>background-color: #2196F3; color: black;</string>
+              </property>
+              <property name="text">
+               <string>Class 4</string>
+              </property>
+             </widget>
+            </item>
+            <item row="5" column="1">
+             <widget class="QLCDNumber" name="lcdClass4"/>
+            </item>
+           </layout>
           </item>
          </layout>
         </widget>
@@ -140,32 +186,28 @@
             <property name="title">
              <string>Automatic Review</string>
             </property>
-            <layout class="QVBoxLayout" name="automaticReviewLayout">
-             <item>
-              <widget class="QLabel" name="label_cases">
-               <property name="text">
-                <string>Choose the number of cases per class</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QLineEdit" name="casesInput">
-               <property name="placeholderText">
-                <string/>
-               </property>
-              </widget>
-             </item>
-             <item>
+            <layout class="QGridLayout" name="gridLayout">
+             <item row="1" column="0">
               <widget class="QCheckBox" name="checkBox">
                <property name="text">
                 <string>Random Check</string>
                </property>
               </widget>
              </item>
-             <item>
+             <item row="1" column="1">
+              <widget class="QLabel" name="label_cases">
+               <property name="text">
+                <string>Number of cases per class</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="2">
+              <widget class="QLineEdit" name="casesInput"/>
+             </item>
+             <item row="2" column="0">
               <widget class="QPushButton" name="nextPatientButton">
                <property name="text">
-                <string>Next Patient</string>
+                <string>Next Random Patient</string>
                </property>
               </widget>
              </item>

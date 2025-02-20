@@ -44,6 +44,10 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.isHierarchical = False
         self.isFlat = False
         self.manualReviewMode = False  
+        self.allPatientsClassified = False  
+        self.randomPatientsList = []  
+        self.currentRandomPatientIndex = 0  
+        self.numCasesPerClass=5
 
     def setup(self) -> None:
         """Configura gli elementi dell'interfaccia grafica."""
@@ -83,29 +87,34 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.reviewButton.clicked.connect(self.onReviewPatientClicked)
         self.ui.checkBox.toggled.connect(self.onCheckToggled)
         self.ui.nextPatientButton.clicked.connect(self.onLoadNextRandomPatient)
+        self.ui.casesInput.setPlaceholderText("5")  
 
 
         self.ui.classificationTable.setColumnCount(2)
         self.ui.classificationTable.setHorizontalHeaderLabels(["Patient ID", "Class"])
         self.ui.classificationTable.horizontalHeader().setStretchLastSection(True)
         self.ui.classificationTable.horizontalHeader().setSectionResizeMode(qt.QHeaderView.Stretch)
-        self.disableClassificationButtons(True) 
+        self.disableAllButtons(True) 
 
 
-    def disableClassificationButtons(self, disable=True):
-        """Disabilita o abilita i pulsanti di classificazione, eccetto se siamo in modalità di revisione manuale."""
-        if self.manualReviewMode:
-            disable = False  # Se siamo in revisione manuale, i pulsanti devono restare attivi
+    def disableAllButtons(self, disable=True):
+        """Disabilita o abilita tutti i pulsanti e interazioni dell'UI."""
         self.ui.class0Button.setEnabled(not disable)
         self.ui.class1Button.setEnabled(not disable)
         self.ui.class2Button.setEnabled(not disable)
         self.ui.class3Button.setEnabled(not disable)
         self.ui.class4Button.setEnabled(not disable)
+        self.ui.reviewButton.setEnabled(not disable)
+        self.ui.checkBox.setEnabled(not disable)
+        self.ui.nextPatientButton.setEnabled(not disable)
+        self.ui.patientDropdown.setEnabled(not disable)
+        self.ui.casesInput.setEnabled(not disable)
 
     def onLoadDatasetClicked(self):
         """Carica il dataset, aggiorna la tabella e avvia il caricamento del primo paziente."""
         datasetPath = qt.QFileDialog.getExistingDirectory(slicer.util.mainWindow(), "Select Dataset Folder")
         if not datasetPath:
+            slicer.util.errorDisplay("⚠️ Nessun dataset selezionato!", windowTitle="Errore")
             return
 
         self.datasetPath = datasetPath
@@ -113,7 +122,6 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.currentPatientIndex = 0
         self.classificationData.clear()
         self.clearTable()
-
         self.randomPatientsList = []
         self.currentRandomPatientIndex = 0
 
@@ -122,19 +130,17 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         if self.isFlat and self.isHierarchical:
             slicer.util.errorDisplay("Errore: Il dataset contiene sia cartelle che file nella cartella principale. Usa solo un formato!", windowTitle="Errore Dataset")
-            self.disableClassificationButtons(True)
+            self.disableAllButtons(True)
             return
 
         self.classificationData = self.logic.loadExistingCSV(self.datasetPath)
 
         allPatientIDs = self.logic.getAllPatientIDs(self.datasetPath)
-
         for patientID in allPatientIDs:
             if patientID not in self.classificationData:
                 self.classificationData[patientID] = None  
 
         self.logic.saveClassificationData(self.datasetPath, self.classificationData)
-
         self.updateTable()  
 
         self.classCounters = self.logic.countPatientsPerClassFromCSV(self.datasetPath)
@@ -144,74 +150,95 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.populatePatientDropdown()
 
         nextPatient = self.logic.getNextPatient(self.datasetPath)
-
         if nextPatient:
             self.currentPatientID, fileList = nextPatient
             self.loadPatientImages(nextPatient)
-            self.disableClassificationButtons(False)
+            self.disableAllButtons(False)  
         else:
             slicer.util.infoDisplay("✔️ Tutti i pazienti sono stati caricati! Ora possono essere classificati.", windowTitle="Dataset Caricato")
-            self.disableClassificationButtons(True)
+            self.disableAllButtons(False)  
+        
+        self.ui.casesInput.setText("5")
+
+        self.ui.labelInputPath.setText('Input Folder Path: ' + self.datasetPath)
+        outputFolder = os.path.join(datasetPath, "output")
+        self.ui.labelOutputPath.setText('Output Folder Path: '+ outputFolder)
 
 
     def onCheckToggled(self, checked: bool) -> None:
-        """Seleziona N casi random per ogni classe e li prepara per la visualizzazione."""
-        
+        """Se il Random Check è attivo, avvia il controllo random dopo la classificazione di tutti i pazienti."""
         if checked:
             try:
-                num_cases = int(self.ui.casesInput.text)  
+                num_cases_text = self.ui.casesInput.text  # Senza le parentesi `()`
+                
+                # Se l'utente non ha inserito nulla, usa il valore predefinito di 5
+                num_cases = int(num_cases_text) if num_cases_text.strip() else 5
+
                 if num_cases <= 0:
                     slicer.util.errorDisplay("⚠️ Inserisci un numero valido di pazienti per classe!", windowTitle="Errore")
                     self.ui.checkBox.setChecked(False)
                     return
+
             except ValueError:
                 slicer.util.errorDisplay("⚠️ Inserisci un numero numerico valido!", windowTitle="Errore")
                 self.ui.checkBox.setChecked(False)
                 return
 
-            # Reset della lista di pazienti selezionati
+            self.numCasesPerClass = num_cases  # Aggiorna il numero di casi per classe
+
+            if self.allPatientsClassified:
+                slicer.util.infoDisplay("Random Check in corso! Premi 'Next' per visualizzare il prossimo paziente.", windowTitle="Revisione Random")
+                self.startRandomCheck()
+            else:
+                slicer.util.infoDisplay(
+                    "Random Check attivato! Una volta classificati tutti i pazienti, partirà automaticamente.",
+                    windowTitle="Info"
+                )
+
+        else:
             self.randomPatientsList = []
             self.currentRandomPatientIndex = 0
-
-            # Carica il dataset classificato
-            classifiedPatients = self.logic.loadExistingCSV(self.datasetPath)
-
-            if not classifiedPatients:
-                slicer.util.errorDisplay("⚠️ Nessun paziente classificato disponibile!", windowTitle="Errore")
-                self.ui.checkBox.setChecked(False)
-                return
-
-            # Raggruppa i pazienti per classe
-            patientsByClass = {}
-            for patientID, classLabel in classifiedPatients.items():
-                if classLabel not in patientsByClass:
-                    patientsByClass[classLabel] = []
-                patientsByClass[classLabel].append(patientID)
-
-            # Seleziona casualmente `num_cases` pazienti per ogni classe
-            for classLabel, patients in patientsByClass.items():
-                if len(patients) > num_cases:
-                    selectedPatients = random.sample(patients, num_cases)
-                else:
-                    selectedPatients = patients  # Se ci sono meno pazienti, li prende tutti
-                self.randomPatientsList.extend(selectedPatients)
-
-            random.shuffle(self.randomPatientsList)  # Mischia i pazienti per renderli casuali
+            slicer.mrmlScene.Clear(0)
+            self.ui.nextPatientButton.setEnabled(False)
             
-            # Se ci sono pazienti da caricare, avvia il primo
-            if self.randomPatientsList:
-                self.onLoadNextRandomPatient()
-            else:
-                slicer.util.errorDisplay("⚠️ Nessun paziente disponibile per la revisione!", windowTitle="Errore")
-                self.ui.checkBox.setChecked(False)
+    def startRandomCheck(self):
+        """Avvia il Random Check selezionando pazienti casuali per ogni classe."""
+        self.randomPatientsList = []
+        self.currentRandomPatientIndex = 0
+
+        classifiedPatients = self.logic.loadExistingCSV(self.datasetPath)
+
+        if not classifiedPatients:
+            slicer.util.errorDisplay("⚠️ Nessun paziente classificato disponibile!", windowTitle="Errore")
+            self.ui.checkBox.setChecked(False)
+            return
+
+        patientsByClass = {}
+        for patientID, classLabel in classifiedPatients.items():
+            if classLabel not in patientsByClass:
+                patientsByClass[classLabel] = []
+            patientsByClass[classLabel].append(patientID)
+
+        for classLabel, patients in patientsByClass.items():
+    
+            selectedPatients = random.sample(patients, min(len(patients), self.numCasesPerClass))
+            self.randomPatientsList.extend(selectedPatients)
+
+        random.shuffle(self.randomPatientsList)  
+
+        self.ui.nextPatientButton.setEnabled(True)
+
+        if self.randomPatientsList:
+            self.onLoadNextRandomPatient()
         else:
-            slicer.mrmlScene.Clear(0)  # Pulisce la scena se la spunta viene disattivata
+            slicer.util.errorDisplay("⚠️ Nessun paziente disponibile per la revisione!", windowTitle="Errore")
+            self.ui.checkBox.setChecked(False)
 
     def onReviewPatientClicked(self):
         """Carica il paziente selezionato dal menu a tendina per la revisione manuale."""
         patientID = self.ui.patientDropdown.currentText
 
-        if patientID == "Select a patient to review":
+        if patientID == "-":
             slicer.util.errorDisplay("⚠️ Nessun paziente selezionato per la revisione!", windowTitle="Errore")
             return
 
@@ -221,7 +248,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.mrmlScene.Clear(0)  
             self.loadPatientImages((patientID, patientFiles))  
             self.manualReviewMode = True  
-            self.disableClassificationButtons(False)  
+            self.disableAllButtons(False)  
         else:
             slicer.util.errorDisplay(f"⚠️ Nessuna immagine trovata per il paziente {patientID}!", windowTitle="Errore")
 
@@ -232,7 +259,6 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.errorDisplay("⚠️ Nessun paziente selezionato per Random Check!", windowTitle="Errore")
             return
 
-        # Controlla se ci sono ancora pazienti da caricare
         if self.currentRandomPatientIndex < len(self.randomPatientsList):
             patientID = self.randomPatientsList[self.currentRandomPatientIndex]
             patientFiles = self.logic.getPatientFilesForReview(self.datasetPath, patientID, self.isHierarchical)
@@ -245,9 +271,10 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
             self.currentRandomPatientIndex += 1  
 
-        else:
-            slicer.util.infoDisplay("✔️ Tutti i pazienti selezionati sono stati rivisti!", windowTitle="Fine Random Check")
-            self.ui.checkBox.setChecked(False) 
+            if self.currentRandomPatientIndex >= len(self.randomPatientsList):
+                slicer.util.infoDisplay("✔️ Tutti i pazienti selezionati sono stati rivisti!", windowTitle="Fine Random Check")
+                self.ui.checkBox.setChecked(False)
+                self.ui.nextPatientButton.setEnabled(False)  
 
     def loadNextPatient(self):
         """Carica il prossimo paziente disponibile nel dataset."""
@@ -260,11 +287,11 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.currentPatientIndex += 1  
             slicer.mrmlScene.Clear(0) 
             self.loadPatientImages((patientID, fileList))
-            self.disableClassificationButtons(False) 
+            self.disableAllButtons(False) 
         else:
             slicer.mrmlScene.Clear(0)  
             slicer.util.infoDisplay("✔️ Tutti i pazienti sono stati classificati!", windowTitle="Fine del Dataset")
-            self.disableClassificationButtons(True) 
+            # self.disableAllButtons(True) 
 
     def loadPatientImages(self, patientData):
         """Carica tutte le immagini di un paziente rispettando la gestione DICOM e altri formati."""
@@ -397,7 +424,6 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             return  
 
         self.classificationData[self.currentPatientID] = classLabel
-
         self.logic.saveClassificationData(self.datasetPath, self.classificationData)
 
         self.classCounters = self.logic.countPatientsPerClassFromCSV(self.datasetPath)
@@ -406,6 +432,17 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.updateTable()
         self.populatePatientDropdown()
+
+        if None not in self.classificationData.values():
+            self.allPatientsClassified = True  
+
+            if self.ui.checkBox.isChecked():  
+                slicer.util.infoDisplay(
+                    "Inizio della revisione casuale. Premi 'Next' per visualizzare il prossimo paziente.",
+                    windowTitle="Revisione Random"
+                )
+                self.startRandomCheck()
+                return  
 
         slicer.mrmlScene.Clear(0)
         self.loadNextPatient()
@@ -453,7 +490,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """Aggiorna il menu a tendina con i pazienti classificati."""
         self.ui.patientDropdown.clear()  
 
-        self.ui.patientDropdown.addItem("Select a patient to review")
+        self.ui.patientDropdown.addItem("-")
 
         patients = self.logic.loadExistingCSV(self.datasetPath) 
         classifiedPatients = {patientID: classLabel for patientID, classLabel in patients.items() if classLabel is not None}
@@ -572,8 +609,11 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
     def saveClassificationData(self, datasetPath: str, classificationData: dict):
         """Salva i dati di classificazione nel CSV e organizza i file in cartelle di output."""
 
-        csvFilePath = os.path.join(datasetPath, "classification_results.csv")
         outputFolder = os.path.join(datasetPath, "output")
+        if not os.path.exists(outputFolder):
+            os.makedirs(outputFolder)
+
+        csvFilePath = os.path.join(outputFolder, "classification_results.csv")
 
         try:
             existingPatients = self.loadExistingPatientsFromCSV(csvFilePath)
@@ -586,9 +626,6 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
                 writer.writerow(["Patient ID", "Class"])
                 for patientID, classLabel in sorted(existingPatients.items()):  
                     writer.writerow([patientID, classLabel if classLabel is not None else ""])
-
-            if not os.path.exists(outputFolder):
-                os.makedirs(outputFolder)
 
             isHierarchical = self.isHierarchicalDataset(datasetPath)
 
@@ -610,6 +647,10 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
                             fileName = os.path.basename(originalFilePath)
                             destPath = os.path.join(patientFolder, fileName)
                             shutil.copy2(originalFilePath, destPath)
+
+            
+        except Exception as e:
+            slicer.util.errorDisplay(f"❌ Errore nel salvataggio del CSV: {str(e)}", windowTitle="Errore")
 
         except Exception as e:
             slicer.util.errorDisplay(f"❌ Errore nel salvataggio del CSV: {str(e)}", windowTitle="Errore")
@@ -658,7 +699,7 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
 
     def getLastPatientFromCSV(self, datasetPath: str) -> Optional[str]:
         """Recupera l'ultimo paziente classificato dal CSV per sapere da dove riprendere."""
-        csvFilePath = os.path.join(datasetPath, "classification_results.csv")
+        csvFilePath = os.path.join(datasetPath, "output", "classification_results.csv")
         if not os.path.exists(csvFilePath):
             return None
 
@@ -692,7 +733,7 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
     
     def loadExistingCSV(self, datasetPath: str) -> dict:
         """Carica i pazienti già classificati dal CSV e restituisce un dizionario con i loro ID e classi."""
-        csvFilePath = os.path.join(datasetPath, "classification_results.csv")
+        csvFilePath = os.path.join(datasetPath, "output", "classification_results.csv")
         classifiedPatients = {}
 
         if not os.path.exists(csvFilePath):
@@ -716,7 +757,7 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
 
     def countPatientsPerClassFromCSV(self, datasetPath: str):  
         """Conta il numero di pazienti per ciascuna classe leggendo dal CSV."""
-        csvFilePath = os.path.join(datasetPath, "classification_results.csv")
+        csvFilePath = os.path.join(datasetPath, "output", "classification_results.csv")
         classCounts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}  
 
         if not os.path.exists(csvFilePath):
