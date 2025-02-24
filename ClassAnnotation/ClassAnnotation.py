@@ -31,7 +31,7 @@ class ClassAnnotation(ScriptedLoadableModule):
         self.parent.acknowledgementText = "Developed with 3D Slicer."
 
 class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
-    """Widget per l'interfaccia grafica del modulo."""
+    """Widget for the graphical user interface."""
 
     def __init__(self, parent=None) -> None:
         ScriptedLoadableModuleWidget.__init__(self, parent)
@@ -44,13 +44,14 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.isHierarchical = False
         self.isFlat = False
         self.manualReviewMode = False  
+        self.inRandomView = False  
         self.allPatientsClassified = False  
         self.randomPatientsList = []  
         self.currentRandomPatientIndex = 0  
-        self.numCasesPerClass=5
+        self.numCasesPerClass = 5 
 
     def setup(self) -> None:
-        """Configura gli elementi dell'interfaccia grafica."""
+        """Sets up the UI components."""
         ScriptedLoadableModuleWidget.setup(self)
 
         uiPath = self.resourcePath("UI/ClassAnnotation.ui")
@@ -69,10 +70,10 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.class3Button.clicked.connect(lambda: self.onClassifyImage(3))
         self.ui.class4Button.clicked.connect(lambda: self.onClassifyImage(4))
 
-        # Inizializza i contatori delle classi
+        # Initialize class counters
         self.classCounters = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}  
 
-        # Associa i QLCDNumber alle rispettive classi
+        # Associate QLCDNumber to class counters
         self.classLCDs = {
             0: self.ui.lcdClass0,
             1: self.ui.lcdClass1,
@@ -89,16 +90,15 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.nextPatientButton.clicked.connect(self.onLoadNextRandomPatient)
         self.ui.casesInput.setPlaceholderText("5")  
 
-
         self.ui.classificationTable.setColumnCount(2)
         self.ui.classificationTable.setHorizontalHeaderLabels(["Patient ID", "Class"])
         self.ui.classificationTable.horizontalHeader().setStretchLastSection(True)
         self.ui.classificationTable.horizontalHeader().setSectionResizeMode(qt.QHeaderView.Stretch)
-        self.disableAllButtons(True) 
-
+        self.disableAllButtons(True)
+        self.updateButtonStates() 
 
     def disableAllButtons(self, disable=True):
-        """Disabilita o abilita tutti i pulsanti e interazioni dell'UI."""
+        """Enable or disable all buttons."""
         self.ui.class0Button.setEnabled(not disable)
         self.ui.class1Button.setEnabled(not disable)
         self.ui.class2Button.setEnabled(not disable)
@@ -106,15 +106,42 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.class4Button.setEnabled(not disable)
         self.ui.reviewButton.setEnabled(not disable)
         self.ui.checkBox.setEnabled(not disable)
-        self.ui.nextPatientButton.setEnabled(not disable)
         self.ui.patientDropdown.setEnabled(not disable)
         self.ui.casesInput.setEnabled(not disable)
+        
+    def disableClassificationButtons(self, disable: bool):
+        """Enable or disable classification buttons."""
+        self.ui.class0Button.setEnabled(not disable)
+        self.ui.class1Button.setEnabled(not disable)
+        self.ui.class2Button.setEnabled(not disable)
+        self.ui.class3Button.setEnabled(not disable)
+        self.ui.class4Button.setEnabled(not disable)
+
+    def updateButtonStates(self):
+        """Update button states based on the current situation."""
+        datasetLoaded = bool(self.datasetPath)
+        self.allPatientsClassified = datasetLoaded and None not in self.classificationData.values()
+
+        if not datasetLoaded:
+            self.disableAllButtons(True)
+            self.ui.nextPatientButton.setEnabled(False)
+            return  
+
+        self.disableAllButtons(False)
+        self.disableClassificationButtons(self.inRandomView)
+        self.ui.reviewButton.setEnabled(not self.inRandomView)
+
+        enableNextRandom = self.allPatientsClassified and self.ui.checkBox.isChecked()
+        self.ui.nextPatientButton.setEnabled(enableNextRandom)
+
+        if self.manualReviewMode:
+            self.ui.checkBox.setChecked(False)
 
     def onLoadDatasetClicked(self):
-        """Carica il dataset, aggiorna la tabella e avvia il caricamento del primo paziente."""
+        """Loads the dataset, updates the table, and starts loading the first patient."""
         datasetPath = qt.QFileDialog.getExistingDirectory(slicer.util.mainWindow(), "Select Dataset Folder")
         if not datasetPath:
-            slicer.util.errorDisplay("⚠️ Nessun dataset selezionato!", windowTitle="Errore")
+            slicer.util.errorDisplay("⚠️ No dataset selected!", windowTitle="Error")
             return
 
         self.datasetPath = datasetPath
@@ -129,7 +156,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.isHierarchical = self.logic.isHierarchicalDataset(self.datasetPath)
 
         if self.isFlat and self.isHierarchical:
-            slicer.util.errorDisplay("Errore: Il dataset contiene sia cartelle che file nella cartella principale. Usa solo un formato!", windowTitle="Errore Dataset")
+            slicer.util.errorDisplay("⚠️ Dataset contains both folders and files. Use a single format!", windowTitle="Error")
             self.disableAllButtons(True)
             return
 
@@ -155,108 +182,131 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.loadPatientImages(nextPatient)
             self.disableAllButtons(False)  
         else:
-            slicer.util.infoDisplay("✔️ Tutti i pazienti sono stati caricati! Ora possono essere classificati.", windowTitle="Dataset Caricato")
+            slicer.util.infoDisplay("✔️ All patients loaded! Ready for classification.", windowTitle="Dataset Loaded")
             self.disableAllButtons(False)  
-        
+
         self.ui.casesInput.setText("5")
 
-        self.ui.labelInputPath.setText('Input Folder Path: ' + self.datasetPath)
+        self.ui.labelInputPath.setText('Input Path: ' + self.datasetPath)
         outputFolder = os.path.join(datasetPath, "output")
-        self.ui.labelOutputPath.setText('Output Folder Path: '+ outputFolder)
+        self.ui.labelOutputPath.setText('Output Path: '+ outputFolder)
 
+        self.updateButtonStates()
+             
+        self.allPatientsClassified = None not in self.classificationData.values()
+
+        if self.allPatientsClassified and self.ui.checkBox.isChecked():
+            slicer.util.infoDisplay("✔️ Dataset già classificato. Avvio revisione casuale.", windowTitle="Revisione Random")
+            self.startRandomCheck()
 
     def onCheckToggled(self, checked: bool) -> None:
-        """Se il Random Check è attivo, avvia il controllo random dopo la classificazione di tutti i pazienti."""
+        """Activates or deactivates random review and manages button states."""
+
         if checked:
-            try:
-                num_cases_text = self.ui.casesInput.text  # Senza le parentesi `()`
-                
-                # Se l'utente non ha inserito nulla, usa il valore predefinito di 5
-                num_cases = int(num_cases_text) if num_cases_text.strip() else 5
+            self.manualReviewMode = False
+            self.ui.reviewButton.setEnabled(False)  
+            self.ui.checkBox.setChecked(True)
 
-                if num_cases <= 0:
-                    slicer.util.errorDisplay("⚠️ Inserisci un numero valido di pazienti per classe!", windowTitle="Errore")
-                    self.ui.checkBox.setChecked(False)
-                    return
+            allClassified = all(classLabel is not None for classLabel in self.classificationData.values())
 
-            except ValueError:
-                slicer.util.errorDisplay("⚠️ Inserisci un numero numerico valido!", windowTitle="Errore")
-                self.ui.checkBox.setChecked(False)
-                return
-
-            self.numCasesPerClass = num_cases  # Aggiorna il numero di casi per classe
-
-            if self.allPatientsClassified:
-                slicer.util.infoDisplay("Random Check in corso! Premi 'Next' per visualizzare il prossimo paziente.", windowTitle="Revisione Random")
+            if allClassified:
+                self.ui.nextPatientButton.setEnabled(True)  
+                slicer.util.infoDisplay("✔️ Starting automatic review.", windowTitle="Random Review")
                 self.startRandomCheck()
             else:
-                slicer.util.infoDisplay(
-                    "Random Check attivato! Una volta classificati tutti i pazienti, partirà automaticamente.",
-                    windowTitle="Info"
-                )
+                self.ui.nextPatientButton.setEnabled(False)  
 
         else:
             self.randomPatientsList = []
             self.currentRandomPatientIndex = 0
             slicer.mrmlScene.Clear(0)
-            self.ui.nextPatientButton.setEnabled(False)
-            
+            self.ui.nextPatientButton.setEnabled(False)  
+
+        self.updateButtonStates() 
+
     def startRandomCheck(self):
-        """Avvia il Random Check selezionando pazienti casuali per ogni classe."""
+        """Select random patients for review and activate random review mode."""
+        
         self.randomPatientsList = []
         self.currentRandomPatientIndex = 0
+        self.inRandomView = True  
 
         classifiedPatients = self.logic.loadExistingCSV(self.datasetPath)
 
         if not classifiedPatients:
-            slicer.util.errorDisplay("⚠️ Nessun paziente classificato disponibile!", windowTitle="Errore")
+            slicer.util.errorDisplay("⚠️ No classified patients found!", windowTitle="Error")
             self.ui.checkBox.setChecked(False)
+            self.inRandomView = False  
+            self.updateButtonStates()  
             return
 
-        patientsByClass = {}
+        try:
+            numCasesText = self.ui.casesInput.text  
+            if callable(numCasesText):  
+                numCasesText = numCasesText()  
+            self.numCasesPerClass = int(numCasesText)  
+        except (ValueError, TypeError):
+            slicer.util.errorDisplay("⚠️ Invalid number of cases per class!", windowTitle="Error")
+            self.ui.casesInput.setText("1") 
+            self.numCasesPerClass = 1 
+
+        patientsByClass = {}  
+
         for patientID, classLabel in classifiedPatients.items():
-            if classLabel not in patientsByClass:
-                patientsByClass[classLabel] = []
-            patientsByClass[classLabel].append(patientID)
+            if classLabel is not None:  
+                if classLabel not in patientsByClass:
+                    patientsByClass[classLabel] = []
+                patientsByClass[classLabel].append(patientID)
 
+        self.randomPatientsList = []
+
+       
         for classLabel, patients in patientsByClass.items():
-    
-            selectedPatients = random.sample(patients, min(len(patients), self.numCasesPerClass))
-            self.randomPatientsList.extend(selectedPatients)
+            if patients:  
+                numToSelect = min(len(patients), self.numCasesPerClass) 
+                selectedPatients = random.sample(patients, numToSelect)  
+                self.randomPatientsList.extend(selectedPatients)
 
-        random.shuffle(self.randomPatientsList)  
+        random.shuffle(self.randomPatientsList)
 
-        self.ui.nextPatientButton.setEnabled(True)
-
-        if self.randomPatientsList:
-            self.onLoadNextRandomPatient()
-        else:
-            slicer.util.errorDisplay("⚠️ Nessun paziente disponibile per la revisione!", windowTitle="Errore")
+        if not self.randomPatientsList:
+            slicer.util.errorDisplay("⚠️ No patients available for review!", windowTitle="Error")
             self.ui.checkBox.setChecked(False)
+            self.inRandomView = False  
+            self.updateButtonStates()  
+            return
+
+        self.updateButtonStates()  
+        self.onLoadNextRandomPatient() 
 
     def onReviewPatientClicked(self):
-        """Carica il paziente selezionato dal menu a tendina per la revisione manuale."""
+        """Loads the selected patient for manual review and disables random review."""
         patientID = self.ui.patientDropdown.currentText
 
         if patientID == "-":
-            slicer.util.errorDisplay("⚠️ Nessun paziente selezionato per la revisione!", windowTitle="Errore")
+            slicer.util.errorDisplay("⚠️ No patient selected for review!", windowTitle="Error")
             return
+
+        if self.ui.checkBox.isChecked():
+            self.ui.checkBox.setChecked(False)
 
         patientFiles = self.logic.getPatientFilesForReview(self.datasetPath, patientID, self.isHierarchical)
 
         if patientFiles:
-            slicer.mrmlScene.Clear(0)  
-            self.loadPatientImages((patientID, patientFiles))  
+            slicer.mrmlScene.Clear(0)
+            self.loadPatientImages((patientID, patientFiles))
             self.manualReviewMode = True  
-            self.disableAllButtons(False)  
+            self.disableAllButtons(False)
         else:
-            slicer.util.errorDisplay(f"⚠️ Nessuna immagine trovata per il paziente {patientID}!", windowTitle="Errore")
+            slicer.util.errorDisplay(f"⚠️ No images found for patient {patientID}!", windowTitle="Error")
+
+        self.updateButtonStates()  
 
     def onLoadNextRandomPatient(self):
-        """Carica il prossimo paziente casuale dalla lista selezionata."""
-        
+        """Loads the next random patient for review and handles end of random review mode."""
         if not self.randomPatientsList:
-            slicer.util.errorDisplay("⚠️ Nessun paziente selezionato per Random Check!", windowTitle="Errore")
+            slicer.util.errorDisplay("⚠️ No patients selected for review!", windowTitle="Error")
+            self.inRandomView = False  
             return
 
         if self.currentRandomPatientIndex < len(self.randomPatientsList):
@@ -264,20 +314,24 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             patientFiles = self.logic.getPatientFilesForReview(self.datasetPath, patientID, self.isHierarchical)
 
             if patientFiles:
-                slicer.mrmlScene.Clear(0)  
+                slicer.mrmlScene.Clear(0)
                 self.loadPatientImages((patientID, patientFiles))
             else:
-                slicer.util.errorDisplay(f"⚠️ Nessuna immagine trovata per il paziente {patientID}!", windowTitle="Errore")
+                slicer.util.errorDisplay(f"⚠️ No images found for patient {patientID}!", windowTitle="Error")
 
-            self.currentRandomPatientIndex += 1  
+            self.currentRandomPatientIndex += 1
 
             if self.currentRandomPatientIndex >= len(self.randomPatientsList):
-                slicer.util.infoDisplay("✔️ Tutti i pazienti selezionati sono stati rivisti!", windowTitle="Fine Random Check")
-                self.ui.checkBox.setChecked(False)
-                self.ui.nextPatientButton.setEnabled(False)  
+                slicer.util.infoDisplay("✔️ All selected patients have been reviewed!", windowTitle="Review Complete")
+                self.ui.checkBox.setChecked(False) 
+                self.inRandomView = False  
+                self.randomPatientsList = []  
+                self.currentRandomPatientIndex = 0  
+
+        self.updateButtonStates()  
 
     def loadNextPatient(self):
-        """Carica il prossimo paziente disponibile nel dataset."""
+        """Loads the next available patient for classification."""
         self.manualReviewMode = False  
 
         nextPatient = self.logic.getNextPatient(self.datasetPath)
@@ -290,12 +344,10 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.disableAllButtons(False) 
         else:
             slicer.mrmlScene.Clear(0)  
-            slicer.util.infoDisplay("✔️ Tutti i pazienti sono stati classificati!", windowTitle="Fine del Dataset")
-            # self.disableAllButtons(True) 
+            slicer.util.infoDisplay("✔️ All patients classified!", windowTitle="Classification Complete")
 
     def loadPatientImages(self, patientData):
-        """Carica tutte le immagini di un paziente rispettando la gestione DICOM e altri formati."""
-
+        """Loads all images of a patient, handling DICOM and other formats."""
         patientID, fileList = patientData
         self.loadedPatients = []
         self.currentPatientID = patientID  
@@ -312,7 +364,6 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         volumeFiles = []
 
         try:
-   
             if dicomFiles:
                 dicomDir = os.path.dirname(dicomFiles[0])  
                 reader = sitk.ImageSeriesReader()
@@ -328,13 +379,11 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                     self.loadedPatients.append(volumeNode)
                     hasVolume = True
 
-
             for filePath in otherFiles:
                 try:
                     sitkImage = sitk.ReadImage(filePath) 
                     numpyImage = sitk.GetArrayFromImage(sitkImage).astype(np.float32)  
 
-                    # Converto in uint8 e poi di nuovo in float32
                     numpyImage_uint8 = numpyImage.astype(np.uint8)
                     numpyImage_uint8[numpyImage_uint8 >= 120] = 120  
                     numpyImage_float32 = numpyImage_uint8.astype(np.float32)
@@ -345,15 +394,18 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                         volumeFiles.append(filePath)
 
                 except Exception as e:
-                    slicer.util.errorDisplay(f"❌ Errore nella lettura di {filePath}: {str(e)}", windowTitle="Errore")
-
+                    slicer.util.errorDisplay(f"❌ Error reading {filePath}: {str(e)}", windowTitle="Error")
 
             for filePath in volumeFiles:
                 try:
                     sitkImage = sitk.ReadImage(filePath)  
                     
                     volumeNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode")
-                    volumeNode.SetName(f"{patientID}_{os.path.basename(filePath)}") 
+                    if self.isFlat:
+                        volumeNode.SetName(f"{os.path.basename(filePath)}") 
+                    elif self.isHierarchical:
+                        volumeNode.SetName(f"{patientID}_{os.path.basename(filePath)}") 
+
                     sitkUtils.PushVolumeToSlicer(sitkImage, volumeNode)
 
                     if volumeNode:
@@ -361,7 +413,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                         hasVolume = True  
 
                 except Exception as e:
-                    slicer.util.errorDisplay(f"❌ Errore nel caricamento del volume {filePath}: {str(e)}", windowTitle="Errore")
+                    slicer.util.errorDisplay(f"❌ Error loading volume {filePath}: {str(e)}", windowTitle="Error")
 
             existingSegmentationNode = slicer.mrmlScene.GetFirstNodeByName(f"{patientID}_Segmentation")
 
@@ -369,7 +421,6 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 if not existingSegmentationNode:
                     segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
                     segmentationNode.SetName(f"{patientID}_Segmentation")
-                    
                 else:
                     segmentationNode = existingSegmentationNode
 
@@ -379,48 +430,45 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                     sitkLabelMap = sitk.Cast(sitkImage, sitk.sitkUInt8)
 
                     if hasVolume:
-               
                         labelmapVolumeNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
                         sitkUtils.PushVolumeToSlicer(sitkLabelMap, labelmapVolumeNode)  
 
                         slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(labelmapVolumeNode, segmentationNode)
                         slicer.mrmlScene.RemoveNode(labelmapVolumeNode)  
                         self.loadedPatients.append(segmentationNode)
-
                     else:
-           
                         labelmapVolumeNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
                         labelmapVolumeNode.SetName(f"{patientID}_LabelMap")
                         sitkUtils.PushVolumeToSlicer(sitkLabelMap, labelmapVolumeNode)
                         self.loadedPatients.append(labelmapVolumeNode)
 
                 except Exception as e:
-                    slicer.util.errorDisplay(f"❌ Errore nel caricamento della segmentazione {filePath}: {str(e)}", windowTitle="Errore")
+                    slicer.util.errorDisplay(f"❌ Error loading segmentation {filePath}: {str(e)}", windowTitle="Error")
 
         except Exception as e:
-            slicer.util.errorDisplay(f"❌ Errore generale nel caricamento del paziente {patientID}: {str(e)}", windowTitle="Errore")
+            slicer.util.errorDisplay(f"❌ General error loading patient {patientID}: {str(e)}", windowTitle="Error")
 
         if self.loadedPatients:
             slicer.util.setSliceViewerLayers(background=self.loadedPatients[0])
             slicer.app.processEvents()
             slicer.util.resetSliceViews()
         else:
-            slicer.util.errorDisplay(f"❌ Errore: nessuna immagine caricata per {patientID}", windowTitle="Errore")
+            slicer.util.errorDisplay(f"❌ Error: No images loaded for {patientID}", windowTitle="Error")
 
     def onClassifyImage(self, classLabel):
-        """Classifica il paziente corrente e aggiorna il CSV e la tabella."""
-
+        """Classifies the current patient and updates the CSV and table."""
+        
         if not self.loadedPatients:
-            slicer.util.errorDisplay("❌ Nessun paziente caricato!", windowTitle="Errore")
+            slicer.util.errorDisplay("❌ No patient loaded!", windowTitle="Error")
             return
 
         if not self.currentPatientID:
-            slicer.util.errorDisplay("❌ Errore: impossibile determinare il paziente!", windowTitle="Errore")
+            slicer.util.errorDisplay("❌ Error: Unable to determine the patient!", windowTitle="Error")
             return  
 
         classifiedPatients = self.logic.loadExistingCSV(self.datasetPath)
         if self.currentPatientID in classifiedPatients and classifiedPatients[self.currentPatientID] is not None and not self.manualReviewMode:
-            slicer.util.errorDisplay("⚠️ Questo paziente è già stato classificato!", windowTitle="Errore")
+            slicer.util.errorDisplay("⚠️ This patient is already classified!", windowTitle="Error")
             return  
 
         self.classificationData[self.currentPatientID] = classLabel
@@ -433,33 +481,35 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.updateTable()
         self.populatePatientDropdown()
 
-        if None not in self.classificationData.values():
-            self.allPatientsClassified = True  
+        self.allPatientsClassified = None not in self.classificationData.values()
 
-            if self.ui.checkBox.isChecked():  
-                slicer.util.infoDisplay(
-                    "Inizio della revisione casuale. Premi 'Next' per visualizzare il prossimo paziente.",
-                    windowTitle="Revisione Random"
-                )
+        if self.allPatientsClassified:
+            slicer.util.infoDisplay("✔️ All patients classified!", windowTitle="Classification Complete")
+            slicer.app.processEvents()  
+
+            if self.ui.checkBox.isChecked():
+                slicer.util.infoDisplay("✔️ Starting automatic review. Click 'Next' to continue.", windowTitle="Review Mode")
+                slicer.app.processEvents() 
                 self.startRandomCheck()
-                return  
+            return  
 
+        self.updateButtonStates() 
         slicer.mrmlScene.Clear(0)
         self.loadNextPatient()
-            
+
     def updateTable(self):
-        """Aggiorna la tabella di classificazione con tutti gli ID dei pazienti."""
+        """Updates the classification table with all patient IDs."""
         self.clearTable()
 
         if not self.classificationData:
             return
 
         classColors = {
-            0: "#FF4C4C",  # Rosso
-            1: "#4CAF50",  # Verde
-            2: "#FF9800",  # Arancione
-            3: "#FFD700",  # Giallo
-            4: "#2196F3"   # Azzurro 
+            0: "#FF4C4C",  # Red
+            1: "#4CAF50",  # Green
+            2: "#FF9800",  # Orange
+            3: "#FFD700",  # Yellow
+            4: "#2196F3"   # Blue
         }
 
         for idx, (patientID, classLabel) in enumerate(self.classificationData.items()):
@@ -473,23 +523,19 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 patientItem.setBackground(color)
                 classItem.setBackground(color)
 
-            # Blocca la modifica delle celle
             patientItem.setFlags(qt.Qt.ItemIsSelectable | qt.Qt.ItemIsEnabled)
             classItem.setFlags(qt.Qt.ItemIsSelectable | qt.Qt.ItemIsEnabled)
 
-            # Inserisci gli elementi nella tabella
             self.ui.classificationTable.setItem(idx, 0, patientItem)
             self.ui.classificationTable.setItem(idx, 1, classItem)
 
     def clearTable(self):
-        """Svuota la tabella."""
+        """Clears the classification table."""
         self.ui.classificationTable.setRowCount(0)
 
-
     def populatePatientDropdown(self):
-        """Aggiorna il menu a tendina con i pazienti classificati."""
+        """Updates the dropdown menu with classified patients."""
         self.ui.patientDropdown.clear()  
-
         self.ui.patientDropdown.addItem("-")
 
         patients = self.logic.loadExistingCSV(self.datasetPath) 
@@ -501,25 +547,22 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         for patientID in sorted(classifiedPatients):
             self.ui.patientDropdown.addItem(patientID)
 
-    def lastPatientCSV(self):
-        """Restituisce l'ultimo paziente classificato dal CSV."""
-        return self.logic.getLastPatientFromCSV(self.datasetPath)
 
 class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
-    """Logica del modulo."""
+    """Module logic for image classification."""
 
     def isFlatDataset(self, datasetPath: str) -> bool:
-        """Determina se il dataset è flat (tutti i file nella cartella principale)."""
-        files = [f for f in os.listdir(datasetPath) if os.path.isfile(os.path.join(datasetPath, f)) and not f.startswith('.') and f!= 'classification_results.csv']
+        """Checks if the dataset is flat (all files are in the main folder)."""
+        files = [f for f in os.listdir(datasetPath) if os.path.isfile(os.path.join(datasetPath, f)) and not f.startswith('.') and f != 'classification_results.csv']
         return any(f.endswith(tuple(SUPPORTED_FORMATS)) for f in files)
 
     def isHierarchicalDataset(self, datasetPath: str) -> bool:
-        """Determina se il dataset è gerarchico (ogni paziente ha una cartella)."""
+        """Checks if the dataset is hierarchical (each patient has a folder)."""
         subdirs = [d for d in os.listdir(datasetPath) if os.path.isdir(os.path.join(datasetPath, d))]
         return any(any(f.endswith(tuple(SUPPORTED_FORMATS)) for f in os.listdir(os.path.join(datasetPath, d))) for d in subdirs)
 
     def getNextPatient(self, datasetPath: str) -> Optional[Tuple[str, List[str]]]:
-        """Restituisce il prossimo paziente da classificare (quelli senza classe assegnata)."""
+        """Returns the next unclassified patient."""
 
         self.isHierarchical = self.isHierarchicalDataset(datasetPath)
         self.isFlat = self.isFlatDataset(datasetPath)
@@ -547,7 +590,7 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
         return None  
 
     def loadExistingPatientsFromCSV(self, csvFilePath: str) -> dict:
-        """Carica i pazienti esistenti dal CSV, mantenendo anche quelli non classificati."""
+        """Loads existing patients from CSV, including unclassified ones."""
         
         existingPatients = {}
 
@@ -561,17 +604,16 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
                 for row in reader:
                     if len(row) == 2:
                         patientID = row[0]
-                        classLabel = row[1] if row[1].isdigit() else None  # Mantiene None se non è classificato
+                        classLabel = row[1] if row[1].isdigit() else None  # Keeps None if unclassified
                         existingPatients[patientID] = int(classLabel) if classLabel is not None else None
 
         except Exception as e:
-            slicer.util.errorDisplay(f"❌ Errore nella lettura del CSV: {str(e)}", windowTitle="Errore")
+            slicer.util.errorDisplay(f"❌ Error reading CSV: {str(e)}", windowTitle="Error")
 
         return existingPatients
         
     def getPatientFiles(self, patientPath: str) -> List[str]:
-        """Restituisce la lista di file di un paziente, escludendo la cartella output."""
-
+        """Returns a list of a patient's files, excluding the output folder."""
         if not os.path.exists(patientPath):
             return []
 
@@ -583,31 +625,8 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
 
         return files
 
-    def getFormattedName(self, volumeNode, isHierarchical: bool, isFlat: bool) -> Optional[str]:
-        """Genera il nome formattato per il paziente."""
-        if volumeNode is None or volumeNode.GetStorageNode() is None:
-            slicer.util.errorDisplay("Errore: il file non è stato caricato correttamente!", windowTitle="Errore")
-            return None  
-
-        filePath = volumeNode.GetStorageNode().GetFileName()
-        if filePath is None:
-            slicer.util.errorDisplay("Errore: il file non ha un percorso valido!", windowTitle="Errore")
-            return None
-
-        fileName = os.path.basename(filePath)
-        baseName, _ = os.path.splitext(fileName)
-
-        if baseName.endswith(".nii"):
-            baseName, _ = os.path.splitext(baseName)
-
-        if isHierarchical:
-            patientID = os.path.basename(os.path.dirname(filePath))
-            return f"{patientID}_{baseName}"
-        else:
-            return baseName.split("_")[0]
-
     def saveClassificationData(self, datasetPath: str, classificationData: dict):
-        """Salva i dati di classificazione nel CSV e organizza i file in cartelle di output."""
+        """Saves classification data to CSV and organizes files into output folders."""
 
         outputFolder = os.path.join(datasetPath, "output")
         if not os.path.exists(outputFolder):
@@ -648,15 +667,11 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
                             destPath = os.path.join(patientFolder, fileName)
                             shutil.copy2(originalFilePath, destPath)
 
-            
         except Exception as e:
-            slicer.util.errorDisplay(f"❌ Errore nel salvataggio del CSV: {str(e)}", windowTitle="Errore")
-
-        except Exception as e:
-            slicer.util.errorDisplay(f"❌ Errore nel salvataggio del CSV: {str(e)}", windowTitle="Errore")
+            slicer.util.errorDisplay(f"❌ Error saving CSV: {str(e)}", windowTitle="Error")
 
     def findOriginalFile(self, datasetPath: str, patientID: str, isHierarchical: bool) -> List[str]:
-        """Trova tutti i file originali corrispondenti al paziente, gestendo sia dataset gerarchici che flat."""
+        """Finds all original files corresponding to a patient, handling both hierarchical and flat datasets."""
         originalFiles = []
 
         for root, _, files in os.walk(datasetPath):
@@ -669,16 +684,72 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
                 if isHierarchical:
                     if os.path.basename(root) == patientID:
                         originalFiles.append(os.path.join(root, file))
-      
+    
                 else:
                     if baseName.startswith(patientID):
                         originalFiles.append(os.path.join(root, file))
 
         return originalFiles
+    
+    def getLastPatientFromCSV(self, datasetPath: str) -> Optional[str]:
+        """Retrieves the last classified patient from the CSV to resume classification."""
+        csvFilePath = os.path.join(datasetPath, "output", "classification_results.csv")
+        if not os.path.exists(csvFilePath):
+            return None
 
+        try:
+            with open(csvFilePath, mode='r') as file:
+                reader = csv.reader(file)
+                next(reader)  
+                last_row = None
+                for row in reader:
+                    if len(row) == 2:
+                        last_row = row[0] 
+                return last_row
+        except Exception as e:
+            slicer.util.errorDisplay(f"❌ Error reading CSV: {str(e)}", windowTitle="Error")
+            return None
+        
+    def getPatientFilesForReview(self, datasetPath: str, patientID: str, isHierarchical: bool) -> List[str]:
+        """Finds images for a previously classified patient."""
+        patientFiles = []
+
+        if isHierarchical:
+            patientPath = os.path.join(datasetPath, patientID)
+            if os.path.exists(patientPath):
+                patientFiles = [os.path.join(patientPath, f) for f in os.listdir(patientPath) if f.endswith(tuple(SUPPORTED_FORMATS))]
+        else:
+            for file in os.listdir(datasetPath):
+                if file.startswith(patientID) and file.endswith(tuple(SUPPORTED_FORMATS)):
+                    patientFiles.append(os.path.join(datasetPath, file))
+
+        return patientFiles
+
+    def loadExistingCSV(self, datasetPath: str) -> dict:
+        """Loads already classified patients from CSV and returns a dictionary with their IDs and classes."""
+        csvFilePath = os.path.join(datasetPath, "output", "classification_results.csv")
+        classifiedPatients = {}
+
+        if not os.path.exists(csvFilePath):
+            return classifiedPatients 
+
+        try:
+            with open(csvFilePath, mode='r') as file:
+                reader = csv.reader(file)
+                next(reader)  
+                for row in reader:
+                    if len(row) == 2:
+                        patientID = row[0]
+                        classLabel = row[1] if row[1].isdigit() else None 
+                        classifiedPatients[patientID] = int(classLabel) if classLabel is not None else None
+
+        except Exception as e:
+            slicer.util.errorDisplay(f"❌ Error reading CSV: {str(e)}", windowTitle="Error")
+
+        return classifiedPatients
 
     def movePatientIfReclassified(self, outputFolder: str, patientID: str, newClass: str):
-        """Sposta la cartella del paziente nella nuova classe se il paziente è stato riclassificato."""
+        """Moves the patient folder to the new class if reclassified."""
 
         for classFolder in os.listdir(outputFolder):
             currentClassPath = os.path.join(outputFolder, classFolder)
@@ -697,66 +768,8 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
                     if not os.listdir(currentClassPath):
                         shutil.rmtree(currentClassPath)
 
-    def getLastPatientFromCSV(self, datasetPath: str) -> Optional[str]:
-        """Recupera l'ultimo paziente classificato dal CSV per sapere da dove riprendere."""
-        csvFilePath = os.path.join(datasetPath, "output", "classification_results.csv")
-        if not os.path.exists(csvFilePath):
-            return None
-
-        try:
-            with open(csvFilePath, mode='r') as file:
-                reader = csv.reader(file)
-                next(reader)  
-                last_row = None
-                for row in reader:
-                    if len(row) == 2:
-                        last_row = row[0] 
-                return last_row
-        except Exception as e:
-            slicer.util.errorDisplay(f"Errore nella lettura del CSV: {str(e)}", windowTitle="Errore")
-            return None
-        
-    def getPatientFilesForReview(self, datasetPath: str, patientID: str, isHierarchical: bool) -> List[str]:
-            """Trova le immagini di un paziente già classificato."""
-            patientFiles = []
-
-            if isHierarchical:
-                patientPath = os.path.join(datasetPath, patientID)
-                if os.path.exists(patientPath):
-                    patientFiles = [os.path.join(patientPath, f) for f in os.listdir(patientPath) if f.endswith(tuple(SUPPORTED_FORMATS))]
-            else:
-                for file in os.listdir(datasetPath):
-                    if file.startswith(patientID) and file.endswith(tuple(SUPPORTED_FORMATS)):
-                        patientFiles.append(os.path.join(datasetPath, file))
-
-            return patientFiles
-    
-    def loadExistingCSV(self, datasetPath: str) -> dict:
-        """Carica i pazienti già classificati dal CSV e restituisce un dizionario con i loro ID e classi."""
-        csvFilePath = os.path.join(datasetPath, "output", "classification_results.csv")
-        classifiedPatients = {}
-
-        if not os.path.exists(csvFilePath):
-            return classifiedPatients 
-
-        try:
-            with open(csvFilePath, mode='r') as file:
-                reader = csv.reader(file)
-                next(reader)  
-                for row in reader:
-                    if len(row) == 2:
-                        patientID = row[0]
-                        classLabel = row[1] if row[1].isdigit() else None 
-                        classifiedPatients[patientID] = int(classLabel) if classLabel is not None else None
-
-        except Exception as e:
-            slicer.util.errorDisplay(f"❌ Errore nella lettura del CSV: {str(e)}", windowTitle="Errore")
-
-        return classifiedPatients
-    
-
     def countPatientsPerClassFromCSV(self, datasetPath: str):  
-        """Conta il numero di pazienti per ciascuna classe leggendo dal CSV."""
+        """Counts the number of patients per class from CSV."""
         csvFilePath = os.path.join(datasetPath, "output", "classification_results.csv")
         classCounts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}  
 
@@ -774,12 +787,12 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
                             classCounts[classLabel] += 1
 
         except Exception as e:
-            slicer.util.errorDisplay(f"❌ Errore nella lettura del CSV: {str(e)}", windowTitle="Errore")
+            slicer.util.errorDisplay(f"❌ Error reading CSV: {str(e)}", windowTitle="Error")
 
         return classCounts
     
     def getAllPatientIDs(self, datasetPath: str) -> List[str]:
-        """Recupera tutti gli ID dei pazienti nel dataset, anche se non classificati."""
+        """Retrieves all patient IDs in the dataset, including unclassified ones."""
         patientIDs = set()
 
         if self.isHierarchicalDataset(datasetPath):
