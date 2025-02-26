@@ -138,7 +138,29 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.ui.checkBox.setChecked(False)
 
     def onLoadDatasetClicked(self):
-        """Loads the dataset, updates the table, and starts loading the first patient."""
+        """Asks for confirmation, clears the scene, loads the dataset, updates the table, and starts loading the first patient."""
+        
+        confirm = qt.QMessageBox()
+        confirm.setIcon(qt.QMessageBox.Question)
+        confirm.setWindowTitle("Load Dataset")
+        confirm.setText("Loading a new dataset will clear the scene. Do you want to continue?")
+        
+        yesButton = confirm.addButton(qt.QMessageBox.Yes)
+        noButton = confirm.addButton(qt.QMessageBox.No)
+        
+        confirm.setDefaultButton(yesButton)
+        confirm.setEscapeButton(noButton)
+
+        confirm.exec_()
+
+        if confirm.clickedButton() == noButton:
+            slicer.util.infoDisplay("Dataset loading cancelled.", windowTitle="Cancelled")
+            return  
+
+        slicer.mrmlScene.Clear(0)
+        self.updateTable()
+        self.currentPatientID = ""  
+
         datasetPath = qt.QFileDialog.getExistingDirectory(slicer.util.mainWindow(), "Select Dataset Folder")
         if not datasetPath:
             slicer.util.errorDisplay("⚠️ No dataset selected!", windowTitle="Error")
@@ -192,37 +214,96 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.labelOutputPath.setText('Output Path: '+ outputFolder)
 
         self.updateButtonStates()
-             
+            
         self.allPatientsClassified = None not in self.classificationData.values()
 
         if self.allPatientsClassified and self.ui.checkBox.isChecked():
             slicer.util.infoDisplay("✔️ Dataset già classificato. Avvio revisione casuale.", windowTitle="Revisione Random")
             self.startRandomCheck()
+        
+    def updateTable(self):
+        """Updates the classification table with all patient IDs and highlights the currently viewed patient with a visible border only on the Patient ID cell if a patient is loaded."""
+        self.clearTable()
+
+        if not self.classificationData:
+            return
+
+        classColors = {
+            0: "#FF4C4C",  # Rosso
+            1: "#4CAF50",  # Verde
+            2: "#FF9800",  # Arancione
+            3: "#FFD700",  # Giallo
+            4: "#2196F3"   # Blu
+        }
+
+        borderColor = "2px solid blue"  
+        currentRow = -1  
+
+        sceneIsEmpty = len(self.loadedPatients) == 0
+
+        for idx, (patientID, classLabel) in enumerate(self.classificationData.items()):
+            self.ui.classificationTable.insertRow(idx)
+
+            patientItem = qt.QTableWidgetItem(patientID)
+            classItem = qt.QTableWidgetItem(str(classLabel) if classLabel is not None else "")
+
+            rowColor = classColors.get(classLabel, "white")  
+            patientItem.setBackground(qt.QColor(rowColor))
+            classItem.setBackground(qt.QColor(rowColor))
+
+            patientItem.setFlags(qt.Qt.ItemIsSelectable | qt.Qt.ItemIsEnabled)
+            classItem.setFlags(qt.Qt.ItemIsSelectable | qt.Qt.ItemIsEnabled)
+
+            if not sceneIsEmpty and hasattr(self, 'currentPatientID') and self.currentPatientID and patientID == self.currentPatientID:
+                currentRow = idx  
+
+                patientItem.setData(qt.Qt.UserRole, f"border: {borderColor};")
+
+                self.ui.classificationTable.setStyleSheet(f"""
+                    QTableWidget::item:selected:!focus:nth-child(1) {{
+                        border: {borderColor};
+                    }}
+                """)
+
+            self.ui.classificationTable.setItem(idx, 0, patientItem)
+            self.ui.classificationTable.setItem(idx, 1, classItem)
+
+        if sceneIsEmpty:
+            self.ui.classificationTable.setStyleSheet("")
+            self.ui.classificationTable.clearSelection()
+            self.currentPatientID = ""  
+
+        elif currentRow != -1:
+            self.ui.classificationTable.scrollToItem(self.ui.classificationTable.item(currentRow, 0))
 
     def onCheckToggled(self, checked: bool) -> None:
         """Activates or deactivates random review and manages button states."""
-
         if checked:
             self.manualReviewMode = False
-            self.ui.reviewButton.setEnabled(False)  
+            self.ui.reviewButton.setEnabled(False)
             self.ui.checkBox.setChecked(True)
 
             allClassified = all(classLabel is not None for classLabel in self.classificationData.values())
 
             if allClassified:
-                self.ui.nextPatientButton.setEnabled(True)  
+                self.ui.nextPatientButton.setEnabled(True)
                 slicer.util.infoDisplay("✔️ Starting automatic review.", windowTitle="Random Review")
                 self.startRandomCheck()
             else:
-                self.ui.nextPatientButton.setEnabled(False)  
+                self.ui.nextPatientButton.setEnabled(False)
 
         else:
+            self.inRandomView = False
             self.randomPatientsList = []
             self.currentRandomPatientIndex = 0
             slicer.mrmlScene.Clear(0)
-            self.ui.nextPatientButton.setEnabled(False)  
 
-        self.updateButtonStates() 
+            self.currentPatientID = ""  
+            
+            self.updateTable()
+            self.ui.nextPatientButton.setEnabled(False)
+
+        self.updateButtonStates()
 
     def startRandomCheck(self):
         """Select random patients for review and activate random review mode."""
@@ -294,6 +375,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         if patientFiles:
             slicer.mrmlScene.Clear(0)
+            self.updateTable()
             self.loadPatientImages((patientID, patientFiles))
             self.manualReviewMode = True  
             self.disableAllButtons(False)
@@ -306,7 +388,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """Loads the next random patient for review and handles end of random review mode."""
         if not self.randomPatientsList:
             slicer.util.errorDisplay("⚠️ No patients selected for review!", windowTitle="Error")
-            self.inRandomView = False  
+            self.inRandomView = False
             return
 
         if self.currentRandomPatientIndex < len(self.randomPatientsList):
@@ -323,28 +405,36 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
             if self.currentRandomPatientIndex >= len(self.randomPatientsList):
                 slicer.util.infoDisplay("✔️ All selected patients have been reviewed!", windowTitle="Review Complete")
-                self.ui.checkBox.setChecked(False) 
-                self.inRandomView = False  
-                self.randomPatientsList = []  
-                self.currentRandomPatientIndex = 0  
+                self.ui.checkBox.setChecked(False)
+                self.inRandomView = False
+                self.randomPatientsList = []
+                self.currentRandomPatientIndex = 0
 
-        self.updateButtonStates()  
+                # ✅ Reset dell'ID paziente attuale e aggiornamento della tabella
+                self.currentPatientID = ""  
+                self.updateTable()
+
+        self.updateButtonStates()
 
     def loadNextPatient(self):
         """Loads the next available patient for classification."""
-        self.manualReviewMode = False  
+        self.manualReviewMode = False
 
         nextPatient = self.logic.getNextPatient(self.datasetPath)
 
         if nextPatient:
             patientID, fileList = nextPatient
-            self.currentPatientIndex += 1  
-            slicer.mrmlScene.Clear(0) 
+            self.currentPatientIndex += 1
+            slicer.mrmlScene.Clear(0)
             self.loadPatientImages((patientID, fileList))
-            self.disableAllButtons(False) 
+            self.disableAllButtons(False)
         else:
-            slicer.mrmlScene.Clear(0)  
+            slicer.mrmlScene.Clear(0)
             slicer.util.infoDisplay("✔️ All patients classified!", windowTitle="Classification Complete")
+
+            # ✅ Reset dell'ID paziente attuale e aggiornamento della tabella
+            self.currentPatientID = ""  
+            self.updateTable()
 
     def loadPatientImages(self, patientData):
         """Loads all images of a patient, handling DICOM and other formats."""
@@ -454,6 +544,8 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.resetSliceViews()
         else:
             slicer.util.errorDisplay(f"❌ Error: No images loaded for {patientID}", windowTitle="Error")
+        
+        self.updateTable()
 
     def onClassifyImage(self, classLabel):
         """Classifies the current patient and updates the CSV and table."""
@@ -495,39 +587,57 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.updateButtonStates() 
         slicer.mrmlScene.Clear(0)
+        self.updateTable()
         self.loadNextPatient()
 
+        
     def updateTable(self):
-        """Updates the classification table with all patient IDs."""
+        """Evidenzia il paziente caricato in scena con una freccia (→) e testo in grassetto. Se la scena è vuota, non evidenzia nessun paziente."""
         self.clearTable()
 
         if not self.classificationData:
             return
 
         classColors = {
-            0: "#FF4C4C",  # Red
-            1: "#4CAF50",  # Green
-            2: "#FF9800",  # Orange
-            3: "#FFD700",  # Yellow
-            4: "#2196F3"   # Blue
+            0: "#FF4C4C",  # Rosso
+            1: "#4CAF50",  # Verde
+            2: "#FF9800",  # Arancione
+            3: "#FFD700",  # Giallo
+            4: "#2196F3"   # Blu
         }
+
+        sceneIsEmpty = len(self.loadedPatients) == 0  # Controlla se la scena è vuota
 
         for idx, (patientID, classLabel) in enumerate(self.classificationData.items()):
             self.ui.classificationTable.insertRow(idx)
 
-            patientItem = qt.QTableWidgetItem(patientID)
+            # Se la scena è vuota, non mostriamo la freccia e non evidenziamo nulla
+            isCurrentPatient = not sceneIsEmpty and hasattr(self, 'currentPatientID') and self.currentPatientID == patientID
+            displayID = f"→ {patientID}" if isCurrentPatient else patientID
+
+            patientItem = qt.QTableWidgetItem(displayID)
             classItem = qt.QTableWidgetItem(str(classLabel) if classLabel is not None else "")
 
-            if classLabel in classColors:
-                color = qt.QColor(classColors[classLabel])
-                patientItem.setBackground(color)
-                classItem.setBackground(color)
+            # Sfondo bianco se non classificato, altrimenti colore della classe
+            rowColor = classColors.get(classLabel, "white") if classLabel is not None else "white"
+            patientItem.setBackground(qt.QColor(rowColor))
+            classItem.setBackground(qt.QColor(rowColor))
 
-            patientItem.setFlags(qt.Qt.ItemIsSelectable | qt.Qt.ItemIsEnabled)
-            classItem.setFlags(qt.Qt.ItemIsSelectable | qt.Qt.ItemIsEnabled)
+            # Se la scena è vuota, NON mettiamo grassetto a nessun paziente
+            font = qt.QFont()
+            font.setBold(isCurrentPatient and not sceneIsEmpty)  
+            font.setWeight(qt.QFont.ExtraBold if isCurrentPatient and not sceneIsEmpty else qt.QFont.Normal)
+
+            patientItem.setFont(font)
+            classItem.setFont(font)
 
             self.ui.classificationTable.setItem(idx, 0, patientItem)
             self.ui.classificationTable.setItem(idx, 1, classItem)
+
+        # Se la scena è vuota, rimuoviamo qualsiasi evidenziazione e resettiamo l'ID paziente attuale
+        if sceneIsEmpty:
+            self.ui.classificationTable.clearSelection()
+            self.currentPatientID = ""  # Reset dell'ultimo paziente caricato
 
     def clearTable(self):
         """Clears the classification table."""
