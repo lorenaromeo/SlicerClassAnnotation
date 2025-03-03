@@ -25,13 +25,13 @@
         <x>0</x>
         <y>0</y>
         <width>759</width>
-        <height>1095</height>
+        <height>1200</height>
        </rect>
       </property>
       <layout class="QVBoxLayout" name="scrollLayout">
        <item>
-        <widget class="QGroupBox" name="inputGroupBox">
-         <property name="title">
+        <widget class="ctkCollapsibleButton" name="inputGroupBox">
+         <property name="text">
           <string>Input/Output</string>
          </property>
          <layout class="QVBoxLayout" name="inputLayout">
@@ -41,19 +41,6 @@
              <string>Select Data Folder</string>
             </property>
            </widget>
-          </item>
-          <item>
-           <spacer name="verticalSpacer">
-            <property name="orientation">
-             <enum>Qt::Vertical</enum>
-            </property>
-            <property name="sizeHint" stdset="0">
-             <size>
-              <width>20</width>
-              <height>40</height>
-             </size>
-            </property>
-           </spacer>
           </item>
           <item>
            <widget class="QLabel" name="labelInputPath">
@@ -72,25 +59,95 @@
          </layout>
         </widget>
        </item>
+
        <item>
-        <widget class="QGroupBox" name="datasetOverviewGroupBox">
-         <property name="title">
+        <widget class="QFrame" name="line_3">
+         <property name="frameShape">
+          <enum>QFrame::HLine</enum>
+         </property>
+         <property name="frameShadow">
+          <enum>QFrame::Sunken</enum>
+         </property>
+        </widget>
+       </item>
+
+       <item>
+        <widget class="ctkCollapsibleButton" name="configurationGroupBox">
+         <property name="text">
+          <string>Configuration</string>
+         </property>
+         <layout class="QHBoxLayout" name="configurationLayout">
+          <item>
+           <widget class="QLabel" name="labelNumClasses">
+            <property name="text">
+             <string>Number of Classes:</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QSpinBox" name="classCountInput">
+            <property name="minimum">
+             <number>2</number>
+            </property>
+            <property name="maximum">
+             <number>10</number>
+            </property>
+            <property name="value">
+             <number>5</number>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="generateClassesButton">
+            <property name="text">
+             <string>Generate Classes</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+
+       <item>
+        <widget class="QFrame" name="line_3">
+         <property name="frameShape">
+          <enum>QFrame::HLine</enum>
+         </property>
+         <property name="frameShadow">
+          <enum>QFrame::Sunken</enum>
+         </property>
+        </widget>
+       </item>
+
+       <item>
+        <widget class="ctkCollapsibleButton" name="datasetOverviewGroupBox">
+         <property name="text">
           <string>Dataset Overview</string>
          </property>
          <layout class="QVBoxLayout" name="datasetOverviewLayout">
           <item>
            <widget class="QTableWidget" name="classificationTable">
+            <property name="columnCount">
+             <number>2</number>
+            </property>
+            <property name="rowCount">
+             <number>0</number>
+            </property>
+            <column>
+             <property name="text">
+              <string>Class Name</string>
+             </property>
+            </column>
+            <column>
+             <property name="text">
+              <string>Number of Samples</string>
+             </property>
+            </column>
             <property name="sizePolicy">
              <sizepolicy hsizetype="Expanding" vsizetype="Minimum">
               <horstretch>0</horstretch>
               <verstretch>2</verstretch>
              </sizepolicy>
-            </property>
-            <property name="maximumSize">
-             <size>
-              <width>16777215</width>
-              <height>16777215</height>
-             </size>
             </property>
             <property name="editTriggers">
              <set>QAbstractItemView::NoEditTriggers</set>
@@ -100,97 +157,31 @@
          </layout>
         </widget>
        </item>
+
        <item>
-        <widget class="QGroupBox" name="classificationGroupBox">
-         <property name="title">
+        <widget class="QFrame" name="line_3">
+         <property name="frameShape">
+          <enum>QFrame::HLine</enum>
+         </property>
+         <property name="frameShadow">
+          <enum>QFrame::Sunken</enum>
+         </property>
+        </widget>
+       </item>
+
+       <item>
+        <widget class="ctkCollapsibleButton" name="classificationGroupBox">
+         <property name="text">
           <string>Classification</string>
          </property>
-         <layout class="QVBoxLayout" name="classificationMainLayout">
-          <item>
-           <layout class="QGridLayout" name="classificationLayout">
-            <item row="0" column="1">
-             <widget class="QLabel" name="labelCurrentCases">
-              <property name="text">
-               <string>Current Cases per Class</string>
-              </property>
-              <property name="alignment">
-               <set>Qt::AlignCenter</set>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="0">
-             <widget class="QPushButton" name="class0Button">
-              <property name="styleSheet">
-               <string>background-color: #FF4C4C; color: black;</string>
-              </property>
-              <property name="text">
-               <string>Class 0</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="1">
-             <widget class="QLCDNumber" name="lcdClass0"/>
-            </item>
-            <item row="2" column="0">
-             <widget class="QPushButton" name="class1Button">
-              <property name="styleSheet">
-               <string>background-color: #4CAF50; color: black;</string>
-              </property>
-              <property name="text">
-               <string>Class 1</string>
-              </property>
-             </widget>
-            </item>
-            <item row="2" column="1">
-             <widget class="QLCDNumber" name="lcdClass1"/>
-            </item>
-            <item row="3" column="0">
-             <widget class="QPushButton" name="class2Button">
-              <property name="styleSheet">
-               <string>background-color: #FF9800; color: black;</string>
-              </property>
-              <property name="text">
-               <string>Class 2</string>
-              </property>
-             </widget>
-            </item>
-            <item row="3" column="1">
-             <widget class="QLCDNumber" name="lcdClass2"/>
-            </item>
-            <item row="4" column="0">
-             <widget class="QPushButton" name="class3Button">
-              <property name="styleSheet">
-               <string>background-color: #FFD700; color: black;</string>
-              </property>
-              <property name="text">
-               <string>Class 3</string>
-              </property>
-             </widget>
-            </item>
-            <item row="4" column="1">
-             <widget class="QLCDNumber" name="lcdClass3"/>
-            </item>
-            <item row="5" column="0">
-             <widget class="QPushButton" name="class4Button">
-              <property name="styleSheet">
-               <string>background-color: #2196F3; color: black;</string>
-              </property>
-              <property name="text">
-               <string>Class 4</string>
-              </property>
-             </widget>
-            </item>
-            <item row="5" column="1">
-             <widget class="QLCDNumber" name="lcdClass4"/>
-            </item>
-           </layout>
-          </item>
+         <layout class="QVBoxLayout" name="classificationLayout">
          </layout>
         </widget>
        </item>
+
        <item>
-        <widget class="QGroupBox" name="reviewGroupBox">
-         <property name="title">
+        <widget class="ctkCollapsibleButton" name="reviewGroupBox">
+         <property name="text">
           <string>Review</string>
          </property>
          <layout class="QVBoxLayout" name="reviewLayout">
@@ -262,14 +253,4 @@
    </item>
   </layout>
  </widget>
- <customwidgets>
-  <customwidget>
-   <class>qMRMLWidget</class>
-   <extends>QWidget</extends>
-   <header>qmrmlwidget.h</header>
-   <container>1</container>
-  </customwidget>
- </customwidgets>
- <resources/>
- <connections/>
 </ui>
