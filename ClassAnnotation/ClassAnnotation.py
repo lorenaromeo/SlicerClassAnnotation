@@ -43,6 +43,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.currentPatientIndex = 0
         self.classificationData = {}
         self.datasetPath = ""
+        self.outputPath = ""
         self.isHierarchical = False
         self.isFlat = False
         self.manualReviewMode = False  
@@ -51,6 +52,9 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.randomPatientsList = []  
         self.currentRandomPatientIndex = 0  
         self.numCasesPerClass = 5 
+        self.standardMode = False
+        self.advancedMode = False
+        self.mode = "standard"
 
     def setup(self) -> None:
         """Sets up the UI components."""
@@ -69,7 +73,9 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.classLCDs = {}
         self.classCounters = {}
 
-        self.ui.loadButton.clicked.connect(self.onLoadDatasetClicked)
+        self.ui.loadButton.clicked.connect(lambda: self.setModeAndLoad("standard"))
+        self.ui.loadButton_advanced.clicked.connect(lambda: self.setModeAndLoad("advanced"))
+        self.ui.loadButton_output.clicked.connect(self.onSelectOutputFolderClicked)
         self.ui.reviewButton.clicked.connect(self.onReviewPatientClicked)
         self.ui.checkBox.toggled.connect(self.onCheckToggled)
         self.ui.nextPatientButton.clicked.connect(self.onLoadNextRandomPatient)
@@ -296,7 +302,27 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.ui.checkBox.setChecked(False)
 
 
-    def onLoadDatasetClicked(self):
+    def onSelectOutputFolderClicked(self):
+        """Allows the user to select an output folder and updates the UI."""
+        outputPath = qt.QFileDialog.getExistingDirectory(slicer.util.mainWindow(), "Select Output Folder")
+        
+        if not outputPath:
+            slicer.util.errorDisplay("⚠️ No output folder selected!", windowTitle="Error")
+            return
+        
+        self.outputPath = outputPath
+        
+        # Enable buttons and update UI
+        self.updateButtonStates()
+
+    def setModeAndLoad(self, mode: str):
+        """Imposta la modalità e carica il dataset."""
+        self.mode = mode  # Memorizza la modalità nella classe widget
+        self.logic.mode = mode  # Memorizza la modalità anche nella logica
+        print(f"Mode set to: {self.mode}")  # Debugging print
+        self.onLoadDatasetClicked(mode)  # Carica il dataset con la modalità selezionata
+
+    def onLoadDatasetClicked(self, mode: str):  
         """Load the dataset, update the table, and correctly set the default number of classes."""
         
         confirm = qt.QMessageBox()
@@ -326,6 +352,17 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             return
 
         self.datasetPath = datasetPath
+
+        if self.mode == "advanced":
+            slicer.util.infoDisplay("Now select the output folder.", windowTitle="Select Output")
+            self.onSelectOutputFolderClicked()
+        else:
+            self.outputPath = os.path.join(datasetPath, "output")
+
+        # Debugging print per verificare il valore di self.mode
+        print(f"Dataset loaded in mode: {self.mode}")  
+
+
         self.loadedPatients.clear()
         self.currentPatientIndex = 0
         self.classificationData.clear()
@@ -408,9 +445,21 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         else:
             slicer.util.errorDisplay(f"⚠️ No images found for patient {firstPatientID}!", windowTitle="Error")
 
-        self.ui.labelInputPath.setText('Input Path: ' + self.datasetPath)
-        outputFolder = os.path.join(datasetPath, "output")
-        self.ui.labelOutputPath.setText('Output Path: '+ outputFolder)
+        if self.mode == "advanced":
+            self.ui.labelInputPath_advanced.setText(f"Input Path: {self.datasetPath}")
+            finalOutputFolder = os.path.join(self.outputPath, "output")  
+            self.ui.labelOutputPath_advanced.setText(f"Output Path: {finalOutputFolder}")
+
+            self.ui.labelInputPath.setText("Input Path: ")
+            self.ui.labelOutputPath.setText("Output Path: ")
+
+        else:
+            self.ui.labelInputPath.setText(f"Input Path: {self.datasetPath}")
+            outputFolder = os.path.join(self.datasetPath, "output")  
+            self.ui.labelOutputPath.setText(f"Output Path: {outputFolder}")
+
+            self.ui.labelInputPath_advanced.setText("Input Path: ")
+            self.ui.labelOutputPath_advanced.setText("Output Path: ")
 
         self.updateButtonStates()
             
@@ -571,21 +620,21 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def loadNextPatient(self):
         """Loads the next available patient for classification."""
-        self.manualReviewMode = False
+        print("Loading next patient...")  
 
-        nextPatient = self.logic.getNextPatient(self.datasetPath)
+        nextPatient = self.logic.getNextPatient(self.datasetPath, self.currentPatientID)
 
         if nextPatient:
             patientID, fileList = nextPatient
-            self.currentPatientIndex += 1
+            self.currentPatientID = patientID  # ✅ Aggiorna il paziente corrente
             slicer.mrmlScene.Clear(0)
             self.loadPatientImages((patientID, fileList))
             self.disableAllButtons(False)
+            print(f"✔️ Loaded patient {patientID}")  # Debugging print
         else:
             slicer.mrmlScene.Clear(0)
             slicer.util.infoDisplay("✔️ All patients classified!", windowTitle="Classification Complete")
-
-            self.currentPatientID = ""  
+            self.currentPatientID = ""  # ✅ Reset se finiti i pazienti
             self.updateTable()
 
     def loadPatientImages(self, patientData):
@@ -717,8 +766,20 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.errorDisplay("⚠️ This patient is already classified as this class!", windowTitle="Error")
             return  
 
+        print(f"Classifying patient {self.currentPatientID} as class {classLabel}")  # Debugging print
+
         self.classificationData[self.currentPatientID] = classLabel
-        self.logic.saveClassificationData(self.datasetPath, self.classificationData)
+        self.disableClassificationButtons(True)
+
+        self.logic.saveClassificationData(self.datasetPath, self.classificationData, self.outputPath)
+
+        print("Classification saved successfully!")  # Debugging print
+
+        # ✅ Prevenire la doppia classificazione dell'ultimo paziente
+        nextPatient = self.logic.getNextPatient(self.datasetPath)
+        if nextPatient is None:
+            slicer.util.infoDisplay("✔️ All patients classified!", windowTitle="Classification Complete")
+            return  # ❌ Evita di ricaricare l'ultimo paziente
 
         if oldClass is not None and oldClass in self.classLCDs:
             if isinstance(self.classLCDs[oldClass], qt.QLCDNumber):  
@@ -748,10 +809,18 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 slicer.app.processEvents() 
                 self.startRandomCheck()
             return  
-     
+        print("Moving to the next patient...")  
+
         self.updateButtonStates()
-        slicer.mrmlScene.Clear(0)
-        self.loadNextPatient()
+        slicer.mrmlScene.Clear(0)  # Rimuove il paziente attuale
+
+        # ✅ Attendi un momento prima di caricare il prossimo paziente per evitare doppia chiamata
+        slicer.app.processEvents()
+
+        self.loadNextPatient()  # Carica il paziente successivo
+
+        # ✅ Riabilita i pulsanti dopo aver caricato il prossimo paziente
+        self.disableClassificationButtons(False)
         
     def updateTable(self):
         """Highlight the loaded patient in the scene with an arrow (→) and bold text. If the scene is empty, no patient is highlighted."""
@@ -862,33 +931,38 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
         subdirs = [d for d in os.listdir(datasetPath) if os.path.isdir(os.path.join(datasetPath, d))]
         return any(any(f.endswith(tuple(SUPPORTED_FORMATS)) for f in os.listdir(os.path.join(datasetPath, d))) for d in subdirs)
 
-    def getNextPatient(self, datasetPath: str) -> Optional[Tuple[str, List[str]]]:
-        """Returns the next unclassified patient."""
+    def getNextPatient(self, datasetPath: str, currentPatientID: Optional[str] = None) -> Optional[Tuple[str, List[str]]]:
+        """Returns the next unclassified patient, ensuring we move forward in the list."""
+        
+        # Determina se il dataset è gerarchico o piatto
+        isHierarchical = self.isHierarchicalDataset(datasetPath)
 
-        self.isHierarchical = self.isHierarchicalDataset(datasetPath)
-        self.isFlat = self.isFlatDataset(datasetPath)
-
+        # Ottieni tutti gli ID dei pazienti e i pazienti classificati
+        allPatientIDs = self.getAllPatientIDs(datasetPath)
         classifiedPatients = self.loadExistingCSV(datasetPath)
 
-        unclassifiedPatients = {patientID: classLabel for patientID, classLabel in classifiedPatients.items() if classLabel is None}
+        # Trova i pazienti non classificati
+        unclassifiedPatients = [patientID for patientID in allPatientIDs if classifiedPatients.get(patientID) is None]
 
+        # Se tutti sono classificati, non c'è più un paziente successivo
         if not unclassifiedPatients:
             return None  
 
-        sortedPatientIDs = sorted(unclassifiedPatients.keys())
+        # Trova l'indice del paziente attuale per passare al successivo
+        if currentPatientID and currentPatientID in allPatientIDs:
+            currentIndex = allPatientIDs.index(currentPatientID)
+        else:
+            currentIndex = -1  # Se il paziente attuale non è nella lista, inizia dall'inizio
 
-        for patientID in sortedPatientIDs:
-            if self.isHierarchical:
-                patientPath = os.path.join(datasetPath, patientID)
-                patientFiles = self.getPatientFiles(patientPath)
-            else:
-                allFiles = os.listdir(datasetPath)
-                patientFiles = [os.path.join(datasetPath, f) for f in allFiles if f.startswith(patientID) and f.endswith(tuple(SUPPORTED_FORMATS))]
+        # Cerca il paziente successivo nella lista
+        for nextIndex in range(currentIndex + 1, len(allPatientIDs)):
+            nextPatientID = allPatientIDs[nextIndex]
+            if nextPatientID in unclassifiedPatients:
+                patientFiles = self.getPatientFilesForReview(datasetPath, nextPatientID, isHierarchical)
+                if patientFiles:
+                    return nextPatientID, patientFiles  # ✅ Restituisce il paziente successivo
 
-            if patientFiles:
-                return patientID, patientFiles
-
-        return None  
+        return None  # ✅ Se non ci sono altri pazienti non classificati
 
     def loadExistingPatientsFromCSV(self, csvFilePath: str) -> dict:
         """Loads existing patients from CSV, including unclassified ones."""
@@ -926,14 +1000,23 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
 
         return files
 
-    def saveClassificationData(self, datasetPath: str, classificationData: dict):
-        """Saves classification data to CSV and organizes files into output folders."""
+    def saveClassificationData(self, datasetPath: str, classificationData: dict, outputFolder: str):
+        """Salva i dati di classificazione in CSV e organizza i file nelle cartelle di output."""
+        
+        mode = getattr(self, "mode", "standard")
+        print(f"Saving in mode: {mode}")  
 
-        outputFolder = os.path.join(datasetPath, "output")
-        if not os.path.exists(outputFolder):
-            os.makedirs(outputFolder)
+        # Determina la cartella di output corretta
+        if mode == "standard":
+            finalOutputFolder = os.path.join(datasetPath, "output")  # Salva dentro il dataset
+        else:
+            finalOutputFolder = os.path.join(outputFolder, "output")  # Salva nella cartella scelta dall'utente
 
-        csvFilePath = os.path.join(outputFolder, "classification_results.csv")
+        # Crea la cartella finale se non esiste
+        if not os.path.exists(finalOutputFolder):
+            os.makedirs(finalOutputFolder)
+
+        csvFilePath = os.path.join(finalOutputFolder, "classification_results.csv")
 
         try:
             existingPatients = self.loadExistingPatientsFromCSV(csvFilePath)
@@ -951,11 +1034,11 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
 
             for patientID, classLabel in existingPatients.items():
                 if classLabel is not None:
-                    classFolder = os.path.join(outputFolder, f"class{classLabel}")
+                    classFolder = os.path.join(finalOutputFolder, f"class{classLabel}")  # Cartelle delle classi nella cartella corretta
                     if not os.path.exists(classFolder):
                         os.makedirs(classFolder)
 
-                    self.movePatientIfReclassified(outputFolder, patientID, classLabel)
+                    self.movePatientIfReclassified(finalOutputFolder, patientID, classLabel)
 
                     patientFolder = os.path.join(classFolder, patientID)
                     if not os.path.exists(patientFolder):
@@ -968,8 +1051,11 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
                             destPath = os.path.join(patientFolder, fileName)
                             shutil.copy2(originalFilePath, destPath)
 
+            print(f"✔️ Data saved in: {finalOutputFolder}")
+
         except Exception as e:
             slicer.util.errorDisplay(f"❌ Error saving CSV: {str(e)}", windowTitle="Error")
+
 
     def findOriginalFile(self, datasetPath: str, patientID: str, isHierarchical: bool) -> List[str]:
         """Finds all original files corresponding to a patient, handling both hierarchical and flat datasets."""
