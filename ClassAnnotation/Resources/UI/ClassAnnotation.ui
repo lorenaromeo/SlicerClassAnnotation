@@ -9,9 +9,15 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>800</width>
+    <width>768</width>
     <height>600</height>
    </rect>
+  </property>
+  <property name="sizePolicy">
+   <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+    <horstretch>0</horstretch>
+    <verstretch>0</verstretch>
+   </sizepolicy>
   </property>
   <layout class="QVBoxLayout" name="mainLayout">
    <item>
@@ -24,13 +30,19 @@
        <rect>
         <x>0</x>
         <y>0</y>
-        <width>774</width>
+        <width>727</width>
         <height>837</height>
        </rect>
       </property>
       <layout class="QVBoxLayout" name="scrollLayout">
        <item>
         <widget class="ctkCollapsibleButton" name="inputGroupBox" native="true">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
          <property name="text" stdset="0">
           <string>Input/Output</string>
          </property>
@@ -38,7 +50,7 @@
           <item>
            <widget class="QTabWidget" name="tabWidget">
             <property name="currentIndex">
-             <number>1</number>
+             <number>0</number>
             </property>
             <widget class="QWidget" name="tab_standard">
              <attribute name="title">
@@ -110,6 +122,12 @@
        </item>
        <item>
         <widget class="QFrame" name="line_3">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
          <property name="frameShape">
           <enum>QFrame::HLine</enum>
          </property>
@@ -120,18 +138,17 @@
        </item>
        <item>
         <widget class="ctkCollapsibleButton" name="configurationGroupBox" native="true">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
          <property name="text" stdset="0">
           <string>Configuration</string>
          </property>
-         <layout class="QHBoxLayout" name="configurationLayout">
-          <item>
-           <widget class="QLabel" name="labelNumClasses">
-            <property name="text">
-             <string>Number of Classes:</string>
-            </property>
-           </widget>
-          </item>
-          <item>
+         <layout class="QGridLayout" name="gridLayout_2">
+          <item row="0" column="1">
            <widget class="QSpinBox" name="classCountInput">
             <property name="minimum">
              <number>2</number>
@@ -144,8 +161,21 @@
             </property>
            </widget>
           </item>
-          <item>
+          <item row="0" column="0">
+           <widget class="QLabel" name="labelNumClasses">
+            <property name="text">
+             <string>Number of Classes:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="2">
            <widget class="QPushButton" name="generateClassesButton">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
             <property name="text">
              <string>Generate Classes</string>
             </property>
@@ -155,17 +185,13 @@
         </widget>
        </item>
        <item>
-        <widget class="QFrame" name="line_3">
-         <property name="frameShape">
-          <enum>QFrame::HLine</enum>
-         </property>
-         <property name="frameShadow">
-          <enum>QFrame::Sunken</enum>
-         </property>
-        </widget>
-       </item>
-       <item>
         <widget class="ctkCollapsibleButton" name="datasetOverviewGroupBox" native="true">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
          <property name="text" stdset="0">
           <string>Dataset Overview</string>
          </property>
@@ -204,6 +230,12 @@
        </item>
        <item>
         <widget class="QFrame" name="line_3">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
          <property name="frameShape">
           <enum>QFrame::HLine</enum>
          </property>
@@ -214,6 +246,12 @@
        </item>
        <item>
         <widget class="ctkCollapsibleButton" name="classificationGroupBox" native="true">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
          <property name="text" stdset="0">
           <string>Classification</string>
          </property>
@@ -221,13 +259,41 @@
         </widget>
        </item>
        <item>
+        <widget class="QFrame" name="line_3">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
+         <property name="frameShape">
+          <enum>QFrame::HLine</enum>
+         </property>
+         <property name="frameShadow">
+          <enum>QFrame::Sunken</enum>
+         </property>
+        </widget>
+       </item>
+       <item>
         <widget class="ctkCollapsibleButton" name="reviewGroupBox" native="true">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
          <property name="text" stdset="0">
           <string>Review</string>
          </property>
          <layout class="QVBoxLayout" name="reviewLayout">
           <item>
            <widget class="QGroupBox" name="automaticReviewGroupBox">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
             <property name="title">
              <string>Automatic Review</string>
             </property>
@@ -261,6 +327,12 @@
           </item>
           <item>
            <widget class="QGroupBox" name="manualReviewGroupBox">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
             <property name="title">
              <string>Manual Review</string>
             </property>
@@ -305,6 +377,7 @@
    <class>ctkCollapsibleButton</class>
    <extends>QWidget</extends>
    <header>ctkcollapsiblebutton.h</header>
+   <container>1</container>
   </customwidget>
  </customwidgets>
  <resources/>
