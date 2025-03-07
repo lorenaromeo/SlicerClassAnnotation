@@ -301,15 +301,14 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
 
     def onSelectOutputFolderClicked(self):
-        """Allows the user to select an output folder and updates the UI."""
+        """Permette all'utente di selezionare una cartella di output e aggiorna l'UI."""
         outputPath = qt.QFileDialog.getExistingDirectory(slicer.util.mainWindow(), "Select Output Folder")
         
         if not outputPath:
-            slicer.util.errorDisplay("⚠️ No output folder selected!", windowTitle="Error")
-            return
-        
-        self.outputPath = outputPath
-        
+            slicer.util.errorDisplay("⚠️ You must select an output folder to proceed!", windowTitle="Error")
+            return 
+
+        self.outputPath = outputPath 
         self.updateButtonStates()
 
     def setModeAndLoad(self, mode: str):
@@ -401,9 +400,11 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         if self.mode == "advanced":
             slicer.util.infoDisplay("Now select the output folder.", windowTitle="Select Output")
-            self.onSelectOutputFolderClicked()
-        else:
-            self.outputPath = os.path.join(datasetPath, "output")
+
+            # Blocca l'esecuzione finché l'utente non seleziona una cartella di output
+            self.outputPath = ""
+            while not self.outputPath:
+                slicer.app.processEvents()  
 
         self.loadedPatients.clear()
         self.currentPatientIndex = 0
