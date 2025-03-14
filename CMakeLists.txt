@@ -7,6 +7,7 @@ project(ClassAnnotation)
 set(EXTENSION_HOMEPAGE "https://www.slicer.org/wiki/Documentation/Nightly/Extensions/ClassAnnotation")
 set(EXTENSION_CONTRIBUTORS "Lorena Romeo (Università Magna Graecia di Catanzaro)")
 set(EXTENSION_DESCRIPTION "This is an example of a simple extension")
+set(EXTENSION_CATEGORY "Utilities")
 set(EXTENSION_ICONURL "https://www.example.com/Slicer/Extensions/ClassAnnotation.png")
 set(EXTENSION_SCREENSHOTURLS "https://www.example.com/Slicer/Extensions/ClassAnnotation/Screenshots/1.png")
 set(EXTENSION_DEPENDS "NA") # Specified as a list or "NA" if no dependencies

@@ -22,7 +22,7 @@ class ClassAnnotation(ScriptedLoadableModule):
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "Class Annotation"
-        self.parent.categories = ["Examples"]
+        self.parent.categories = ["Utilities"]
         self.parent.dependencies = []
         self.parent.contributors = ["Lorena Romeo (UMG)"]
         self.parent.helpText = """
@@ -30,7 +30,6 @@ class ClassAnnotation(ScriptedLoadableModule):
         displaying them in 3D Slicer, and classifying them.
         """
         self.parent.acknowledgementText = "Developed with 3D Slicer."
-
 
 class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     """Widget for the graphical user interface."""
@@ -55,6 +54,11 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.standardMode = False
         self.advancedMode = False
         self.mode = "standard"
+        self.blinkTimer = qt.QTimer() 
+        self.blinkTimer.timeout.connect(self.toggleBlink)  
+        self.blinkState = True  
+        self.blinkItem = None 
+        self.blinkPatientID = None  
 
     def setup(self) -> None:
         """Sets up the UI components."""
@@ -244,12 +248,13 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def onClassCountChanged(self):
         """Check if the number of classes is lower than the highest existing class and generate a warning."""
         
-        maxClass = 4  
-        existingClasses = [c for c in self.classificationData.values() if c is not None]
-        if existingClasses:
-            maxClass = max(existingClasses)
+        minRequiredClasses = 2  
 
-        minRequiredClasses = maxClass + 1  
+        existingClasses = [c for c in self.classificationData.values() if c is not None]
+
+        if existingClasses: 
+            maxClass = max(existingClasses)
+            minRequiredClasses = max(maxClass + 1, 2)  
 
         currentNumClasses = self.ui.classCountInput.value
 
@@ -273,6 +278,8 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.checkBox.setEnabled(not disable)
         self.ui.patientDropdown.setEnabled(not disable)
         self.ui.casesInput.setEnabled(not disable)
+        self.ui.generateClassesButton.setEnabled(not disable)
+        self.ui.classCountInput.setEnabled(not disable)
 
     def disableClassificationButtons(self, disable: bool):
         """Enable or disable only classification buttons."""
@@ -303,14 +310,21 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def onSelectOutputFolderClicked(self):
         """Permette all'utente di selezionare una cartella di output e aggiorna l'UI."""
         outputPath = qt.QFileDialog.getExistingDirectory(slicer.util.mainWindow(), "Select Output Folder")
-        
+
         if not outputPath:
             slicer.util.errorDisplay("⚠️ You must select an output folder to proceed!", windowTitle="Error")
-            return 
+            return
 
-        self.outputPath = outputPath 
+        self.outputPath = outputPath
+        self.ui.labelOutputPath_advanced.setText(f"Output Path: {self.outputPath}")
+        self.ui.labelOutputPath.setText(f"Output Path: {self.outputPath}")
+
+        # Se l'utente aveva già selezionato l'input, aggiorniamo l'interfaccia per avviare il caricamento
+        if self.datasetPath:
+            self.loadDataset()
+        
         self.updateButtonStates()
-
+    
     def setModeAndLoad(self, mode: str):
         """Imposta la modalità e carica il dataset."""
         self.mode = mode  
@@ -322,7 +336,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         dialog = qt.QDialog()
         dialog.setWindowTitle("⚠️ Supported Dataset Formats")
-        dialog.setModal(True)  
+        dialog.setModal(True)
 
         layout = qt.QVBoxLayout()
         dialog.setLayout(layout)
@@ -334,9 +348,12 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         treeLayout = qt.QHBoxLayout()
         layout.addLayout(treeLayout)
 
-        # Hierarchical
+        # Hierarchical Tree
         treeHierarchical = qt.QTreeWidget()
         treeHierarchical.setHeaderLabels(["Hierarchical"])
+        treeHierarchical.setFixedSize(150, 150)
+        treeHierarchical.setSelectionMode(qt.QAbstractItemView.NoSelection)  # Rimuove la selezione
+
         rootHierarchical = qt.QTreeWidgetItem(treeHierarchical, ["CaseID_0001"])
         qt.QTreeWidgetItem(rootHierarchical, ["img.ext"])
         qt.QTreeWidgetItem(rootHierarchical, ["mask.ext"])
@@ -345,9 +362,12 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         qt.QTreeWidgetItem(rootHierarchical, ["mask.ext"])
         treeHierarchical.expandAll()
 
-        # Flat
+        # Flat Tree
         treeFlat = qt.QTreeWidget()
         treeFlat.setHeaderLabels(["Flat"])
+        treeFlat.setFixedSize(150, 150)
+        treeFlat.setSelectionMode(qt.QAbstractItemView.NoSelection)  # Rimuove la selezione
+
         qt.QTreeWidgetItem(treeFlat, ["img01.ext"])
         qt.QTreeWidgetItem(treeFlat, ["img01_mask.ext"])
         qt.QTreeWidgetItem(treeFlat, ["img02.ext"])
@@ -357,13 +377,19 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         treeLayout.addWidget(treeHierarchical)
         treeLayout.addWidget(treeFlat)
 
+        # OK Button
         buttonOK = qt.QPushButton("OK")
         buttonOK.setFixedWidth(80)
-        buttonOK.clicked.connect(lambda: (dialog.accept(), dialog.close()))  
-        layout.addWidget(buttonOK)
-        layout.setAlignment(buttonOK, qt.Qt.AlignCenter)
+        buttonOK.clicked.connect(lambda: (dialog.accept(), dialog.close()))
+        
+        buttonLayout = qt.QHBoxLayout()
+        buttonLayout.addStretch()
+        buttonLayout.addWidget(buttonOK)
+        buttonLayout.addStretch()
+        layout.addLayout(buttonLayout)
 
         dialog.exec_()
+
 
     def onLoadDatasetClicked(self, mode: str):  
         """Load the dataset, update the table, and correctly set the default number of classes."""
@@ -387,24 +413,29 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.infoDisplay("Dataset loading cancelled.", windowTitle="Cancelled")
             return  
 
+
         slicer.mrmlScene.Clear(0)
         self.updateTable()
         self.currentPatientID = ""  
 
+        # Selezione della cartella di input
         datasetPath = qt.QFileDialog.getExistingDirectory(slicer.util.mainWindow(), "Select Dataset Folder")
         if not datasetPath:
             slicer.util.errorDisplay("⚠️ No dataset selected!", windowTitle="Error")
             return
 
         self.datasetPath = datasetPath
+        self.ui.labelInputPath_advanced.setText(f"Input Path: {self.datasetPath}")
+        self.ui.labelInputPath.setText(f"Input Path: {self.datasetPath}")
 
-        if self.mode == "advanced":
+        # Se l'output non è stato ancora selezionato, chiederlo all'utente
+        if not self.outputPath and self.mode == "advanced":
             slicer.util.infoDisplay("Now select the output folder.", windowTitle="Select Output")
+            self.onSelectOutputFolderClicked()  # Chiama direttamente il metodo per selezionare l'output
 
-            # Blocca l'esecuzione finché l'utente non seleziona una cartella di output
-            self.outputPath = ""
-            while not self.outputPath:
-                slicer.app.processEvents()  
+        # Se entrambe le cartelle sono state selezionate, avvia il caricamento
+        if self.datasetPath and self.outputPath:
+            self.loadDataset()
 
         self.loadedPatients.clear()
         self.currentPatientIndex = 0
@@ -845,7 +876,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.disableClassificationButtons(False)  
         
     def updateTable(self):
-        """Highlight the loaded patient in the scene with an arrow (→) and bold text. If the scene is empty, no patient is highlighted."""
+        """Aggiorna la tabella e fa lampeggiare sia la freccia che l'ID del paziente corrente."""
         self.clearTable()
 
         if not self.classificationData:
@@ -864,7 +895,9 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             9: "#607D8B"   # Grigio bluastro
         }
 
-        sceneIsEmpty = len(self.loadedPatients) == 0 
+        sceneIsEmpty = len(self.loadedPatients) == 0
+        self.blinkItem = None  
+        self.blinkPatientID = None  
 
         for idx, (patientID, classLabel) in enumerate(self.classificationData.items()):
             self.ui.classificationTable.insertRow(idx)
@@ -889,13 +922,33 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.ui.classificationTable.setItem(idx, 0, patientItem)
             self.ui.classificationTable.setItem(idx, 1, classItem)
 
+            if isCurrentPatient:
+                self.blinkItem = patientItem
+                self.blinkPatientID = patientID
+
         if sceneIsEmpty:
             self.ui.classificationTable.clearSelection()
             self.currentPatientID = ""  
 
+        # Avvia il lampeggio 
+        if self.blinkItem:
+            self.blinkTimer.start(300)
+        else:
+            self.blinkTimer.stop()
+
     def clearTable(self):
         """Clears the classification table."""
         self.ui.classificationTable.setRowCount(0)
+
+    def toggleBlink(self):
+        """Alterna tra testo visibile e invisibile per simulare il lampeggio sia della freccia che dell'ID."""
+        if self.blinkItem and self.blinkPatientID:
+            if self.blinkState:
+                self.blinkItem.setText("")  
+            else:
+                self.blinkItem.setText(f"→ {self.blinkPatientID}")  
+
+            self.blinkState = not self.blinkState  
 
     def populatePatientDropdown(self):
         """Updates the dropdown menu with classified patients."""
