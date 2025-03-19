@@ -31,7 +31,7 @@
         <x>0</x>
         <y>0</y>
         <width>727</width>
-        <height>837</height>
+        <height>853</height>
        </rect>
       </property>
       <layout class="QVBoxLayout" name="scrollLayout">
@@ -178,6 +178,20 @@
             </property>
             <property name="text">
              <string>Generate Classes</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="label">
+            <property name="text">
+             <string>Rename Classes</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QPushButton" name="renameButton">
+            <property name="text">
+             <string>Rename</string>
             </property>
            </widget>
           </item>

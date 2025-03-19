@@ -42,7 +42,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.currentPatientIndex = 0
         self.classificationData = {}
         self.datasetPath = ""
-        self.outputPath = ""
+        self.outputPath = None
         self.isHierarchical = False
         self.isFlat = False
         self.manualReviewMode = False  
@@ -280,6 +280,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.casesInput.setEnabled(not disable)
         self.ui.generateClassesButton.setEnabled(not disable)
         self.ui.classCountInput.setEnabled(not disable)
+        self.ui.renameButton.setEnabled(not disable)
 
     def disableClassificationButtons(self, disable: bool):
         """Enable or disable only classification buttons."""
@@ -306,6 +307,8 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if self.manualReviewMode:
             self.ui.checkBox.setChecked(False)
 
+        self.ui.classificationTable.setEnabled(not self.inRandomView)
+
 
     def onSelectOutputFolderClicked(self):
         """Permette all'utente di selezionare una cartella di output e aggiorna l'UI."""
@@ -316,10 +319,12 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             return
 
         self.outputPath = outputPath
-        self.ui.labelOutputPath_advanced.setText(f"Output Path: {self.outputPath}")
-        self.ui.labelOutputPath.setText(f"Output Path: {self.outputPath}")
+        if self.mode == "advanced":
+            self.ui.labelOutputPath_advanced.setText(f"Output Path: {self.outputPath}")
 
-        # Se l'utente aveva già selezionato l'input, aggiorniamo l'interfaccia per avviare il caricamento
+        else:
+            self.ui.labelOutputPath.setText(f"Output Path: {self.outputPath}")
+
         if self.datasetPath:
             self.loadDataset()
         
@@ -390,6 +395,48 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         dialog.exec_()
 
+    def loadDataset(self):
+        """Loads dataset information and updates the UI state."""
+        
+        if not self.datasetPath:
+            slicer.util.errorDisplay("⚠️ No dataset selected!", windowTitle="Error")
+            return
+
+        # Determine if dataset is hierarchical or flat
+        self.isFlat = self.logic.isFlatDataset(self.datasetPath)
+        self.isHierarchical = self.logic.isHierarchicalDataset(self.datasetPath)
+
+        if self.isFlat and self.isHierarchical:
+            slicer.util.errorDisplay("⚠️ Dataset contains both files and folders. Use a single format!", windowTitle="Error")
+            return
+
+        # Load classification data
+        self.classificationData = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
+        
+        # Get all patient IDs
+        allPatientIDs = self.logic.getAllPatientIDs(self.datasetPath)
+
+        if not allPatientIDs:
+            slicer.util.errorDisplay("⚠️ No patients found in the dataset!", windowTitle="Error")
+            return
+
+        # Trova il primo paziente non classificato, ma **NON caricarlo subito**
+        unclassifiedPatients = [pid for pid in allPatientIDs if self.classificationData.get(pid) is None]
+
+        if not unclassifiedPatients:
+            slicer.util.infoDisplay("✔️ All patients classified.", windowTitle="Dataset Fully Classified")
+            self.allPatientsClassified = True
+        else:
+            self.allPatientsClassified = False
+
+        # **Aggiorna gli elementi UI, ma evita di ricaricare il paziente**
+        self.updateLCDCounters()
+        self.updateTable()
+        self.updateButtonStates()
+
+        # **Ora chiama `loadNextPatient()` solo una volta**
+        self.loadNextPatient()
+
 
     def onLoadDatasetClicked(self, mode: str):  
         """Load the dataset, update the table, and correctly set the default number of classes."""
@@ -431,7 +478,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Se l'output non è stato ancora selezionato, chiederlo all'utente
         if not self.outputPath and self.mode == "advanced":
             slicer.util.infoDisplay("Now select the output folder.", windowTitle="Select Output")
-            self.onSelectOutputFolderClicked()  # Chiama direttamente il metodo per selezionare l'output
+            self.ui.labelOutputPath_advanced.setText(f"Output Path: ")
 
         # Se entrambe le cartelle sono state selezionate, avvia il caricamento
         if self.datasetPath and self.outputPath:
@@ -536,20 +583,29 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.updateButtonStates()
             
             
+            
     def onCheckToggled(self, checked: bool) -> None:
         """Activates or deactivates random review and manages button states."""
         if checked:
             self.manualReviewMode = False
             self.ui.reviewButton.setEnabled(False)
             self.ui.checkBox.setChecked(True)
+            self.ui.classificationTable.setEditTriggers(qt.QAbstractItemView.NoEditTriggers)  # Prevents editing
+            self.ui.classificationTable.setSelectionMode(qt.QAbstractItemView.NoSelection)  # Prevents selection
 
-        
+            # 🔹 Manually force text color to stay visible
+            for row in range(self.ui.classificationTable.rowCount):
+                for col in range(self.ui.classificationTable.columnCount):
+                    item = self.ui.classificationTable.item(row, col)
+                    if item:
+                        item.setForeground(qt.QBrush(qt.QColor("black")))  # Keep text black
+
             self.classificationData = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
             self.allPatientsClassified = None not in self.classificationData.values()
 
             if not self.allPatientsClassified:
                 slicer.util.infoDisplay("At the end of the classification, the automatic review will start.", windowTitle="Random Review Mode")
-            
+
             if self.allPatientsClassified:
                 self.ui.nextPatientButton.setEnabled(True)
                 slicer.util.infoDisplay("✔️ Dataset already classified. Starting automatic review.", windowTitle="Random Review")
@@ -564,7 +620,8 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.mrmlScene.Clear(0)
 
             self.currentPatientID = ""  
-            
+            self.ui.classificationTable.setEditTriggers(qt.QAbstractItemView.AllEditTriggers)
+            self.ui.classificationTable.setSelectionMode(qt.QAbstractItemView.SingleSelection)
             self.updateTable()
             self.ui.nextPatientButton.setEnabled(False)
 
@@ -582,7 +639,8 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if not classifiedPatients:
             slicer.util.errorDisplay("⚠️ No classified patients found!", windowTitle="Error")
             self.ui.checkBox.setChecked(False)
-            self.inRandomView = False  
+            self.inRandomView = False 
+            self.ui.classificationTable.setEnabled(True) 
             self.updateButtonStates()  
             return
 
@@ -691,18 +749,25 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.updateButtonStates()
 
     def loadNextPatient(self):
-        """Loads the next available patient for classification."""
-    
-        nextPatient = self.logic.getNextPatient(self.datasetPath, self.outputPath, self.currentPatientID)
+        """Loads the next unclassified patient. If all are classified, display a completion message."""
+        
+        unclassifiedPatients = [patientID for patientID, classLabel in self.classificationData.items() if classLabel is None]
 
-        if nextPatient:
-            patientID, fileList = nextPatient
-            self.currentPatientID = patientID 
-            slicer.mrmlScene.Clear(0)
-            self.loadPatientImages((patientID, fileList))
-            self.disableAllButtons(False)
-  
+        if unclassifiedPatients:
+            # Get the first available unclassified patient
+            nextPatientID = unclassifiedPatients[0]
+            patientFiles = self.logic.getPatientFilesForReview(self.datasetPath, nextPatientID, self.isHierarchical)
+
+            if patientFiles:
+                self.currentPatientID = nextPatientID  
+                slicer.mrmlScene.Clear(0)
+                self.loadPatientImages((nextPatientID, patientFiles))
+                self.disableAllButtons(False)
+            else:
+                slicer.util.errorDisplay(f"⚠️ No images found for patient {nextPatientID}!", windowTitle="Error")
+        
         else:
+            # If there are no more unclassified patients, show the final message
             slicer.mrmlScene.Clear(0)
             slicer.util.infoDisplay("✔️ All patients classified!", windowTitle="Classification Complete")
             self.currentPatientID = ""  
@@ -912,6 +977,19 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             patientItem.setBackground(qt.QColor(rowColor))
             classItem.setBackground(qt.QColor(rowColor))
 
+            patientItem.setForeground(qt.QBrush(qt.QColor("black")))
+            classItem.setForeground(qt.QBrush(qt.QColor("black")))
+                        
+            header = self.ui.classificationTable.horizontalHeader()
+            header.setStyleSheet("QHeaderView::section {  color: black;}")
+
+            
+            vHeader = self.ui.classificationTable.verticalHeader()
+            vHeader.setStyleSheet("QHeaderView::section { color: black; }")
+
+            self.ui.classificationTable.setStyleSheet("QTableWidget { color: black; }")
+
+
             font = qt.QFont()
             font.setBold(isCurrentPatient and not sceneIsEmpty)  
             font.setWeight(qt.QFont.ExtraBold if isCurrentPatient and not sceneIsEmpty else qt.QFont.Normal)
@@ -965,7 +1043,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.ui.patientDropdown.addItem(patientID)
 
     def onPatientSelected(self):
-        """Load the selected patient from the table for classification."""
+        """Load the selected patient from the table for classification after confirmation."""
         selectedItems = self.ui.classificationTable.selectedItems()
         
         if not selectedItems:
@@ -978,6 +1056,20 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.errorDisplay("⚠️ Invalid patient selected!", windowTitle="Error")
             return
 
+        # Show confirmation dialog
+        confirmDialog = qt.QMessageBox()
+        confirmDialog.setIcon(qt.QMessageBox.Question)
+        confirmDialog.setWindowTitle("Confirm Patient Load")
+        confirmDialog.setText(f"Are you sure you want to load patient {patientID}?")
+        confirmDialog.setStandardButtons(qt.QMessageBox.Yes | qt.QMessageBox.No)
+        confirmDialog.setDefaultButton(qt.QMessageBox.No)
+
+        response = confirmDialog.exec_()
+
+        if response == qt.QMessageBox.No:
+            return  # If the user clicks "No", do nothing
+
+        # Load patient files if user confirms
         patientFiles = self.logic.getPatientFilesForReview(self.datasetPath, patientID, self.isHierarchical)
 
         if patientFiles:
