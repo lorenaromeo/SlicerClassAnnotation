@@ -84,6 +84,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.checkBox.toggled.connect(self.onCheckToggled)
         self.ui.nextPatientButton.clicked.connect(self.onLoadNextRandomPatient)
         self.ui.generateClassesButton.clicked.connect(self.generateClassButtons)  
+        self.ui.renameButton.clicked.connect(self.renameClassButtons)
 
         self.ui.casesInput.setText("5")  
         self.ui.casesInput.setPlaceholderText("")  
@@ -173,6 +174,80 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.ui.classificationGroupBox.setLayout(classificationLayout)
         self.ui.classificationGroupBox.update()
+
+    def renameClassButtons(self):
+        """Apre una finestra per rinominare i bottoni delle classi con un layout elegante e campi vuoti."""
+        dialog = qt.QDialog()
+        dialog.setWindowTitle("Rename Class Buttons")
+        dialog.setModal(True)
+        dialog.setFixedSize(300, 250)
+
+        mainLayout = qt.QVBoxLayout()
+        mainLayout.setContentsMargins(10, 10, 10, 10)
+        dialog.setLayout(mainLayout)
+
+        scrollArea = qt.QScrollArea()
+        scrollArea.setWidgetResizable(True)
+        scrollWidget = qt.QWidget()
+        scrollLayout = qt.QVBoxLayout(scrollWidget)
+        scrollArea.setWidget(scrollWidget)
+        mainLayout.addWidget(scrollArea)
+
+        renameInputs = {}
+
+        for classLabel, button in self.classButtons.items():
+            if not isinstance(button, qt.QPushButton):
+                continue
+
+            classRow = qt.QHBoxLayout()
+
+            label = qt.QLabel(f"Class {classLabel}:")
+            label.setFixedWidth(100)
+            label.setStyleSheet("font-size: 12px; font-weight: bold;")
+
+            inputField = qt.QLineEdit()  
+            inputField.setPlaceholderText(button.text)  
+            renameInputs[classLabel] = inputField  
+
+            classRow.addWidget(label)
+            classRow.addWidget(inputField)
+
+            scrollLayout.addLayout(classRow)
+
+        scrollLayout.addStretch(1)
+
+        buttonLayout = qt.QHBoxLayout()
+
+        applyButton = qt.QPushButton("Apply")
+        applyButton.setStyleSheet(
+            "background-color: #4CAF50; color: black; font-weight: bold; padding: 8px; border-radius: 6px;"
+        )
+        applyButton.clicked.connect(lambda: self.applyRenaming(renameInputs, dialog))
+
+        cancelButton = qt.QPushButton("Cancel")
+        cancelButton.setStyleSheet(
+            "background-color: #D32F2F; color: black; font-weight: bold; padding: 8px; border-radius: 6px;"
+        )
+        cancelButton.clicked.connect(lambda: dialog.reject())
+
+        buttonLayout.addWidget(cancelButton)
+        buttonLayout.addWidget(applyButton)
+
+        mainLayout.addLayout(buttonLayout)
+
+        dialog.exec()
+
+
+    def applyRenaming(self, renameInputs, dialog):
+        """Applica i nuovi nomi ai pulsanti solo se i campi non sono vuoti."""
+        for classLabel, inputField in renameInputs.items():
+            if isinstance(inputField, qt.QLineEdit):  
+                newName = inputField.text.strip()  
+                if newName:  
+                    self.classButtons[classLabel].setText(newName)
+
+        dialog.accept()  
+        slicer.util.infoDisplay("Class names updated successfully!", windowTitle="Update Successful")
 
     def getMainColor(self, classLabel):
         """Main Color."""
@@ -590,15 +665,14 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.manualReviewMode = False
             self.ui.reviewButton.setEnabled(False)
             self.ui.checkBox.setChecked(True)
-            self.ui.classificationTable.setEditTriggers(qt.QAbstractItemView.NoEditTriggers)  # Prevents editing
-            self.ui.classificationTable.setSelectionMode(qt.QAbstractItemView.NoSelection)  # Prevents selection
+            self.ui.classificationTable.setEditTriggers(qt.QAbstractItemView.NoEditTriggers) 
+            self.ui.classificationTable.setSelectionMode(qt.QAbstractItemView.NoSelection) 
 
-            # 🔹 Manually force text color to stay visible
             for row in range(self.ui.classificationTable.rowCount):
                 for col in range(self.ui.classificationTable.columnCount):
                     item = self.ui.classificationTable.item(row, col)
                     if item:
-                        item.setForeground(qt.QBrush(qt.QColor("black")))  # Keep text black
+                        item.setForeground(qt.QBrush(qt.QColor("black")))  
 
             self.classificationData = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
             self.allPatientsClassified = None not in self.classificationData.values()
@@ -1008,7 +1082,6 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.ui.classificationTable.clearSelection()
             self.currentPatientID = ""  
 
-        # Avvia il lampeggio 
         if self.blinkItem:
             self.blinkTimer.start(300)
         else:
