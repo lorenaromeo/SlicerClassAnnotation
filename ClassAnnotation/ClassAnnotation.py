@@ -477,7 +477,6 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.errorDisplay("⚠️ No dataset selected!", windowTitle="Error")
             return
 
-        # Determine if dataset is hierarchical or flat
         self.isFlat = self.logic.isFlatDataset(self.datasetPath)
         self.isHierarchical = self.logic.isHierarchicalDataset(self.datasetPath)
 
@@ -485,17 +484,13 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.errorDisplay("⚠️ Dataset contains both files and folders. Use a single format!", windowTitle="Error")
             return
 
-        # Load classification data
         self.classificationData = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
-        
-        # Get all patient IDs
         allPatientIDs = self.logic.getAllPatientIDs(self.datasetPath)
 
         if not allPatientIDs:
             slicer.util.errorDisplay("⚠️ No patients found in the dataset!", windowTitle="Error")
             return
 
-        # Trova il primo paziente non classificato, ma **NON caricarlo subito**
         unclassifiedPatients = [pid for pid in allPatientIDs if self.classificationData.get(pid) is None]
 
         if not unclassifiedPatients:
@@ -504,12 +499,9 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         else:
             self.allPatientsClassified = False
 
-        # **Aggiorna gli elementi UI, ma evita di ricaricare il paziente**
         self.updateLCDCounters()
         self.updateTable()
         self.updateButtonStates()
-
-        # **Ora chiama `loadNextPatient()` solo una volta**
         self.loadNextPatient()
 
 
@@ -540,7 +532,6 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.updateTable()
         self.currentPatientID = ""  
 
-        # Selezione della cartella di input
         datasetPath = qt.QFileDialog.getExistingDirectory(slicer.util.mainWindow(), "Select Dataset Folder")
         if not datasetPath:
             slicer.util.errorDisplay("⚠️ No dataset selected!", windowTitle="Error")
@@ -550,12 +541,10 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.labelInputPath_advanced.setText(f"Input Path: {self.datasetPath}")
         self.ui.labelInputPath.setText(f"Input Path: {self.datasetPath}")
 
-        # Se l'output non è stato ancora selezionato, chiederlo all'utente
         if not self.outputPath and self.mode == "advanced":
             slicer.util.infoDisplay("Now select the output folder.", windowTitle="Select Output")
             self.ui.labelOutputPath_advanced.setText(f"Output Path: ")
 
-        # Se entrambe le cartelle sono state selezionate, avvia il caricamento
         if self.datasetPath and self.outputPath:
             self.loadDataset()
 
@@ -828,7 +817,6 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         unclassifiedPatients = [patientID for patientID, classLabel in self.classificationData.items() if classLabel is None]
 
         if unclassifiedPatients:
-            # Get the first available unclassified patient
             nextPatientID = unclassifiedPatients[0]
             patientFiles = self.logic.getPatientFilesForReview(self.datasetPath, nextPatientID, self.isHierarchical)
 
@@ -841,7 +829,6 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 slicer.util.errorDisplay(f"⚠️ No images found for patient {nextPatientID}!", windowTitle="Error")
         
         else:
-            # If there are no more unclassified patients, show the final message
             slicer.mrmlScene.Clear(0)
             slicer.util.infoDisplay("✔️ All patients classified!", windowTitle="Classification Complete")
             self.currentPatientID = ""  
@@ -1181,7 +1168,6 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
         if not unclassifiedPatients:
             return None  
 
-        # Trova l'indice del paziente attuale per passare al successivo
         if currentPatientID and currentPatientID in allPatientIDs:
             currentIndex = allPatientIDs.index(currentPatientID)
         else:
