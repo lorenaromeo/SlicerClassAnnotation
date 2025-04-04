@@ -443,6 +443,8 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if not self.outputPath and self.mode == ADVANCED_MODE:
             slicer.util.infoDisplay("Now select the output folder.", windowTitle="Select Output")
             self.ui.labelOutputPath_advanced.setText(f"Output Path: ")
+            if not self.outputPath:
+                return
 
         if self.datasetPath and self.outputPath:
             self.loadDataset()
