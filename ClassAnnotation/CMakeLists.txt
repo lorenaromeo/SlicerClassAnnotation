@@ -4,6 +4,8 @@ set(MODULE_NAME ClassAnnotation)
 #-----------------------------------------------------------------------------
 set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}.py
+  ${MODULE_NAME}Lib/ClassAnnotationUtils.py
+  ${MODULE_NAME}Lib/ClassAnnotationUIUtils.py
   )
 
 set(MODULE_PYTHON_RESOURCES
