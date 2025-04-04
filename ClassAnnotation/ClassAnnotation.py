@@ -350,6 +350,16 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         if self.datasetPath:
             self.loadDataset()
+
+            if self.mode == ADVANCED_MODE:
+                existingClasses = [c for c in self.classificationData.values() if c is not None]
+                maxClass = max(existingClasses) if existingClasses else 4
+                defaultNumClasses = max(5, maxClass + 1)
+
+                self.ui.classCountInput.setValue(defaultNumClasses)
+
+                self.classCounters = self.logic.countPatientsPerClassFromCSV(self.datasetPath, self.outputPath)
+                self.generateClassButtons()
         
         self.updateButtonStates()
     
@@ -433,6 +443,8 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if not self.outputPath and self.mode == ADVANCED_MODE:
             slicer.util.infoDisplay("Now select the output folder.", windowTitle="Select Output")
             self.ui.labelOutputPath_advanced.setText(f"Output Path: ")
+            if not self.outputPath:
+                return
 
         if self.datasetPath and self.outputPath:
             self.loadDataset()
