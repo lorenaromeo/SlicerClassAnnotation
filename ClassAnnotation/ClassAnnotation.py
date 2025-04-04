@@ -350,6 +350,16 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         if self.datasetPath:
             self.loadDataset()
+
+            if self.mode == ADVANCED_MODE:
+                existingClasses = [c for c in self.classificationData.values() if c is not None]
+                maxClass = max(existingClasses) if existingClasses else 4
+                defaultNumClasses = max(5, maxClass + 1)
+
+                self.ui.classCountInput.setValue(defaultNumClasses)
+
+                self.classCounters = self.logic.countPatientsPerClassFromCSV(self.datasetPath, self.outputPath)
+                self.generateClassButtons()
         
         self.updateButtonStates()
     
