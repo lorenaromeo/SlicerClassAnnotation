@@ -10,7 +10,11 @@ from slicer.ScriptedLoadableModule import *
 from slicer.util import VTKObservationMixin
 
 
-SUPPORTED_FORMATS = [".nrrd", ".nii", ".nii.gz", ".dcm", ".DCM"]
+SUPPORTED_FORMATS = [".nrrd", ".nii", ".nii.gz", ".dcm", ".DCM", ".mha"]
+
+STANDARD_MODE = "standard"
+ADVANCED_MODE = "advanced"
+OUTPUT_FOLDER = "output"
 
 class ClassAnnotation(ScriptedLoadableModule):
     """Module for classifying medical images using 3D Slicer."""
@@ -48,7 +52,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.numCasesPerClass = 5 
         self.standardMode = False
         self.advancedMode = False
-        self.mode = "standard"
+        self.mode = STANDARD_MODE
         self.blinkTimer = qt.QTimer() 
         self.blinkTimer.timeout.connect(self.toggleBlink)  
         self.blinkState = True  
@@ -73,7 +77,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.classCounters = {}
 
         self.ui.loadButton.clicked.connect(lambda: self.setModeAndLoad("standard"))
-        self.ui.loadButton_advanced.clicked.connect(lambda: self.setModeAndLoad("advanced"))
+        self.ui.loadButton_advanced.clicked.connect(lambda: self.setModeAndLoad(ADVANCED_MODE))
         self.ui.loadButton_output.clicked.connect(self.onSelectOutputFolderClicked)
         self.ui.reviewButton.clicked.connect(self.onReviewPatientClicked)
         self.ui.checkBox.toggled.connect(self.onCheckToggled)
@@ -107,7 +111,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.errorDisplay("❌ Error: Missing layout in classificationGroupBox!", windowTitle="Error")
             return
 
-        # rimozione dei widget presenti
+        # remove the present widgets
         while classificationLayout.count():
             item = classificationLayout.takeAt(0)
             if item:
@@ -250,7 +254,6 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def updateLCDCounters(self):
         """Update the LCD counters with the number of classified cases for each class."""
         
-        # Conta i pazienti per ogni classe
         self.classCounters = self.logic.countPatientsPerClassFromCSV(self.datasetPath, self.outputPath)
 
         for classLabel, count in self.classCounters.items():
@@ -339,7 +342,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             return
 
         self.outputPath = outputPath
-        if self.mode == "advanced":
+        if self.mode == ADVANCED_MODE:
             self.ui.labelOutputPath_advanced.setText(f"Output Path: {self.outputPath}")
 
         else:
@@ -427,7 +430,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.labelInputPath_advanced.setText(f"Input Path: {self.datasetPath}")
         self.ui.labelInputPath.setText(f"Input Path: {self.datasetPath}")
 
-        if not self.outputPath and self.mode == "advanced":
+        if not self.outputPath and self.mode == ADVANCED_MODE:
             slicer.util.infoDisplay("Now select the output folder.", windowTitle="Select Output")
             self.ui.labelOutputPath_advanced.setText(f"Output Path: ")
 
@@ -514,9 +517,9 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         else:
             slicer.util.errorDisplay(f"⚠️ No images found for patient {firstPatientID}!", windowTitle="Error")
 
-        if self.mode == "advanced":
+        if self.mode == ADVANCED_MODE:
             self.ui.labelInputPath_advanced.setText(f"Input Path: {self.datasetPath}")
-            finalOutputFolder = os.path.join(self.outputPath, "output")  
+            finalOutputFolder = os.path.join(self.outputPath, OUTPUT_FOLDER)  
             self.ui.labelOutputPath_advanced.setText(f"Output Path: {finalOutputFolder}")
 
             self.ui.labelInputPath.setText("Input Path: ")
@@ -524,7 +527,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         else:
             self.ui.labelInputPath.setText(f"Input Path: {self.datasetPath}")
-            outputFolder = os.path.join(self.datasetPath, "output")  
+            outputFolder = os.path.join(self.datasetPath, OUTPUT_FOLDER)  
             self.ui.labelOutputPath.setText(f"Output Path: {outputFolder}")
 
             self.ui.labelInputPath_advanced.setText("Input Path: ")
@@ -1073,12 +1076,12 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
         """Save the classification data in CSV and organize files in output folders."""
         from ClassAnnotationLib.ClassAnnotationUtils import movePatientIfReclassified, findOriginalFile
         
-        mode = getattr(self, "mode", "standard")
+        mode = getattr(self, "mode", STANDARD_MODE)
 
         if mode == "standard":
-            finalOutputFolder = os.path.join(datasetPath, "output")  
+            finalOutputFolder = os.path.join(datasetPath, OUTPUT_FOLDER)  
         else:
-            finalOutputFolder = os.path.join(outputFolder, "output") 
+            finalOutputFolder = os.path.join(outputFolder, OUTPUT_FOLDER) 
 
         if not os.path.exists(finalOutputFolder):
             os.makedirs(finalOutputFolder)
@@ -1139,11 +1142,12 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
     def loadExistingCSV(self, datasetPath: str, outputPath: str) -> dict:
         """Upload the data of the patients classified by the correct CSV according to the mode."""
         
-        mode = getattr(self, "mode", "standard")  
+        mode = getattr(self, "mode", STANDARD_MODE)  
+        
         if mode == "standard":
-            csvFilePath = os.path.join(datasetPath, "output", "classification_results.csv")
+            csvFilePath = os.path.join(datasetPath, OUTPUT_FOLDER, "classification_results.csv")
         else:  
-            csvFilePath = os.path.join(outputPath, "output", "classification_results.csv")
+            csvFilePath = os.path.join(outputPath, OUTPUT_FOLDER, "classification_results.csv")
 
         classifiedPatients = {}
 
@@ -1160,7 +1164,7 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
                             classifiedPatients[patientID] = int(classLabel) if classLabel is not None else None
 
             except Exception as e:
-                slicer.util.errorDisplay(f"❌ Errore nella lettura del CSV: {str(e)}", windowTitle="Errore")
+                slicer.util.errorDisplay(f"❌ Error while reading CSV {str(e)}", windowTitle="Error")
 
         allPatientIDs = self.getAllPatientIDs(datasetPath)
 
@@ -1174,11 +1178,11 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
     def countPatientsPerClassFromCSV(self, datasetPath: str, outputPath: str) -> dict:
         """It counts the number of patients for each class reading from the correct CSV."""
         
-        mode = getattr(self, "mode", "standard")
-        if mode == "standard":
-            csvFilePath = os.path.join(datasetPath, "output", "classification_results.csv")
+        mode = getattr(self, "mode", STANDARD_MODE)
+        if mode == STANDARD_MODE:
+            csvFilePath = os.path.join(datasetPath, OUTPUT_FOLDER, "classification_results.csv")
         else:
-            csvFilePath = os.path.join(outputPath, "output", "classification_results.csv")
+            csvFilePath = os.path.join(outputPath, OUTPUT_FOLDER, "classification_results.csv")
 
         classCounts = {}
 
@@ -1196,7 +1200,7 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
                         classCounts[classLabel] = classCounts.get(classLabel, 0) + 1 
 
         except Exception as e:
-            slicer.util.errorDisplay(f"❌ Errore nella lettura del CSV: {str(e)}", windowTitle="Errore")
+            slicer.util.errorDisplay(f"❌ Error while reading CSV {str(e)}", windowTitle="Error")
 
         return classCounts
         
@@ -1206,11 +1210,11 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
 
         if self.isHierarchicalDataset(datasetPath):
             patientIDs = {d for d in os.listdir(datasetPath) if os.path.isdir(os.path.join(datasetPath, d)) 
-                        and d.lower() != "output" and not d.startswith('.')}
+                        and d.lower() != OUTPUT_FOLDER and not d.startswith('.')}
 
         elif self.isFlatDataset(datasetPath):
             allFiles = [f for f in os.listdir(datasetPath) if os.path.isfile(os.path.join(datasetPath, f)) 
-                        and f.lower() != "output" and not f.startswith('.') and f != 'classification_results.csv']
+                        and f.lower() != OUTPUT_FOLDER and not f.startswith('.') and f != 'classification_results.csv']
             for fileName in allFiles:
                 patientID = fileName.split("_")[0]  
                 patientIDs.add(patientID)
