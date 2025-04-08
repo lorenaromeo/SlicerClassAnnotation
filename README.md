@@ -8,3 +8,7 @@ Annotation results are automatically saved in a CSV file and an output folder is
 Two review modes designed to minimise classification errors are included: a random review mode, which automatically opens a number of cases per class, and a manual review mode, which allows users to select specific patients and change the previously assigned class.
 
 ![screenshot](https://raw.githubusercontent.com/lorenaromeo/SlicerClassAnnotation/refs/heads/main/ClassAnnotation_screenshot.png)
+
+#Tutorial
+
+A video tutorial can be found [here](https://drive.google.com/file/d/1aquVa_120tXwTltVutA9tb2mD2o8SCwK/view?usp=sharing)
