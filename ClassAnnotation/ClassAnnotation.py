@@ -23,10 +23,9 @@ class ClassAnnotation(ScriptedLoadableModule):
         self.parent.title = "Class Annotation"
         self.parent.categories = ["Utilities"]
         self.parent.dependencies = []
-        self.parent.contributors = ["Lorena Romeo (UMG)"]
+        self.parent.contributors = ["Lorena Romeo (Magna Graecia University of Catanzaro, Italy)", "Roberto Veraldi (Magna Graecia University of Catanzaro, Italy)", "Ciro Benito Raggio (Karlsruhe Institute of Technology, Germany)", "Maria Francesca Spadea (Karlsruhe Institute of Technology, Germany)", "Paolo Zaffino (Magna Graecia University of Catanzaro, Italy)"]
         self.parent.helpText = """
-        This module allows loading medical images in .nrrd format, 
-        displaying them in 3D Slicer, and classifying them.
+        Extension for supporting clinicians during the manual annotation of medical image datasets.
         """
         self.parent.acknowledgementText = "Developed with 3D Slicer."
 
