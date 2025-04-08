@@ -9,6 +9,6 @@ Two review modes designed to minimise classification errors are included: a rand
 
 ![screenshot](https://raw.githubusercontent.com/lorenaromeo/SlicerClassAnnotation/refs/heads/main/ClassAnnotation_screenshot.png)
 
-#Tutorial
+# Tutorial
 
 A video tutorial can be found [here](https://drive.google.com/file/d/1aquVa_120tXwTltVutA9tb2mD2o8SCwK/view?usp=sharing)
