@@ -5,7 +5,7 @@ project(ClassAnnotation)
 #-----------------------------------------------------------------------------
 # Extension meta-information
 set(EXTENSION_HOMEPAGE "https://github.com/lorenaromeo/SlicerClassAnnotation")
-set(EXTENSION_CONTRIBUTORS "Lorena Romeo (Magna Graecia University of Catanzaro, Italy), Ciro Benito Raggio (Karlsruhe Institute of Technology, Germany), Maria Francesca Spadea (Karlsruhe Institute of Technology, Germany), Paolo Zaffino (Magna Graecia University of Catanzaro, Italy)")
+set(EXTENSION_CONTRIBUTORS "Lorena Romeo (Magna Graecia University of Catanzaro, Italy), Roberto Veraldi (Magna Graecia University of Catanzaro, Italy), Ciro Benito Raggio (Karlsruhe Institute of Technology, Germany), Maria Francesca Spadea (Karlsruhe Institute of Technology, Germany), Paolo Zaffino (Magna Graecia University of Catanzaro, Italy)")
 set(EXTENSION_DESCRIPTION "Extension for supporting clinicians during the manual annotation of medical image datasets.")
 set(EXTENSION_CATEGORY "Utilities")
 set(EXTENSION_ICONURL "https://raw.githubusercontent.com/lorenaromeo/SlicerClassAnnotation/refs/heads/main/ClassAnnotation.png")
