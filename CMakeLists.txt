@@ -4,12 +4,12 @@ project(ClassAnnotation)
 
 #-----------------------------------------------------------------------------
 # Extension meta-information
-set(EXTENSION_HOMEPAGE "https://www.slicer.org/wiki/Documentation/Nightly/Extensions/ClassAnnotation")
-set(EXTENSION_CONTRIBUTORS "Lorena Romeo (Università Magna Graecia di Catanzaro)")
-set(EXTENSION_DESCRIPTION "This is an example of a simple extension")
+set(EXTENSION_HOMEPAGE "https://github.com/lorenaromeo/SlicerClassAnnotation")
+set(EXTENSION_CONTRIBUTORS "Lorena Romeo (Magna Graecia University of Catanzaro, Italy), Ciro Benito Raggio (Karlsruhe Institute of Technology, Germany), Maria Francesca Spadea (Karlsruhe Institute of Technology, Germany), Paolo Zaffino (Magna Graecia University of Catanzaro, Italy)")
+set(EXTENSION_DESCRIPTION "Extension for supporting clinicians during the manual annotation of medical image datasets.")
 set(EXTENSION_CATEGORY "Utilities")
-set(EXTENSION_ICONURL "https://www.example.com/Slicer/Extensions/ClassAnnotation.png")
-set(EXTENSION_SCREENSHOTURLS "https://www.example.com/Slicer/Extensions/ClassAnnotation/Screenshots/1.png")
+set(EXTENSION_ICONURL "https://raw.githubusercontent.com/lorenaromeo/SlicerClassAnnotation/refs/heads/main/ClassAnnotation.png")
+set(EXTENSION_SCREENSHOTURLS "https://raw.githubusercontent.com/lorenaromeo/SlicerClassAnnotation/refs/heads/main/ClassAnnotation_screenshot.png")
 set(EXTENSION_DEPENDS "NA") # Specified as a list or "NA" if no dependencies
 
 #-----------------------------------------------------------------------------
