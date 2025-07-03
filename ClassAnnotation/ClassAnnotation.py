@@ -1,13 +1,13 @@
 import os
 import csv
 import shutil
-from typing import List
 import SimpleITK as sitk
 import sitkUtils
 import qt
 import slicer
 from slicer.ScriptedLoadableModule import *
 from slicer.util import VTKObservationMixin
+from typing import List, Dict
 
 
 SUPPORTED_FORMATS = [".nrrd", ".nii", ".nii.gz", ".dcm", ".DCM", ".mha"]
@@ -57,6 +57,8 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.blinkState = True  
         self.blinkItem = None 
         self.blinkPatientID = None  
+        self.patientImageHashes = []  
+        self.fromOverviewSelection = False
 
     def setup(self) -> None:
         """Sets up the UI components."""
@@ -110,18 +112,20 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.errorDisplay("❌ Error: Missing layout in classificationGroupBox!", windowTitle="Error")
             return
 
-        # remove the present widgets
-        while classificationLayout.count():
-            item = classificationLayout.takeAt(0)
-            if item:
-                if item.widget():
-                    item.widget().deleteLater()
-                elif item.layout():
-                    while item.layout().count():
-                        sub_item = item.layout().takeAt(0)
-                        if sub_item.widget():
-                            sub_item.widget().deleteLater()
-                    item.layout().deleteLater()
+        def clearLayout(layout):
+            while layout.count():
+                item = layout.takeAt(0)
+                widget = item.widget()
+                childLayout = item.layout()
+
+                if widget:
+                    widget.setParent(None)
+                    widget.deleteLater()
+                elif childLayout:
+                    clearLayout(childLayout)
+                    childLayout.setParent(None)
+
+        clearLayout(classificationLayout)
 
         self.classButtons.clear()
         self.classLCDs.clear()
@@ -329,7 +333,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if self.manualReviewMode:
             self.ui.checkBox.setChecked(False)
 
-        self.ui.classificationTable.setEnabled(not self.inRandomView)
+        # self.ui.classificationTable.setEnabled(not self.inRandomView)
 
 
     def onSelectOutputFolderClicked(self):
@@ -341,21 +345,37 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             return
 
         self.outputPath = outputPath
-        if self.mode == ADVANCED_MODE:
-            self.ui.labelOutputPath_advanced.setText(f"Output Path: {self.outputPath}")
+        # if self.mode == ADVANCED_MODE:
+        #     self.ui.labelOutputPath_advanced.setText(f"Output Path: {self.outputPath}")
 
-        else:
-            self.ui.labelOutputPath.setText(f"Output Path: {self.outputPath}")
+        # else:
+        #     self.ui.labelOutputPath.setText(f"Output Path: {self.outputPath}")
 
-        if self.datasetPath:
-            self.loadDataset()
+        # if self.datasetPath:
+        #     self.loadDataset()
         
+        # self.updateButtonStates()
+
+        self.ui.labelOutputPath_advanced.setText(f"Output Path: {self.outputPath}")
+
+      
+        if self.datasetPath and self.mode == ADVANCED_MODE:
+            self.loadDataset()
+
         self.updateButtonStates()
-    
+        
     def setModeAndLoad(self, mode: str):
         self.mode = mode  
         self.logic.mode = mode  
         self.onLoadDatasetClicked(mode)  
+
+    def syncLoadedPatientFromViewer(self):
+        """
+        Se nessun volume è registrato in self.loadedPatients, prova a recuperarlo dal viewer.
+        """
+        bgVolume = slicer.app.layoutManager().sliceWidget("Red").sliceLogic().GetBackgroundLayer().GetVolumeNode()
+        if bgVolume and bgVolume.GetName():
+            self.loadedPatients = [bgVolume]
 
     def loadDataset(self):
         """Loads dataset information and updates the UI state."""
@@ -386,11 +406,18 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         else:
             self.allPatientsClassified = False
 
+        if not self.loadedPatients:
+            self.loadedPatients = slicer.util.getNodesByClass('vtkMRMLScalarVolumeNode')
+
+        self.classButtons.clear()
+        self.classLCDs.clear()
+
         self.updateLCDCounters()
         self.updateTable()
+        self.generateClassButtons()
         self.updateButtonStates()
         self.loadNextPatient()
-
+        self.syncLoadedPatientFromViewer()
 
     def onLoadDatasetClicked(self, mode: str):  
         """Load the dataset, update the table, and correctly set the default number of classes."""
@@ -427,19 +454,35 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.datasetPath = datasetPath
         self.ui.labelInputPath_advanced.setText(f"Input Path: {self.datasetPath}")
-        self.ui.labelInputPath.setText(f"Input Path: {self.datasetPath}")
+        # self.ui.labelInputPath.setText(f"Input Path: {self.datasetPath}")
 
-        if not self.outputPath and self.mode == ADVANCED_MODE:
-            slicer.util.infoDisplay("Now select the output folder.", windowTitle="Select Output")
-            self.ui.labelOutputPath_advanced.setText(f"Output Path: ")
+        shouldLoad = True
+        if self.mode == ADVANCED_MODE:
+            if not self.outputPath:
+                slicer.util.infoDisplay("Please select the output folder.", windowTitle="Select Output")
+                shouldLoad = False
 
-        if self.datasetPath and self.outputPath:
+        if shouldLoad:
             self.loadDataset()
 
+        # if self.mode == ADVANCED_MODE:
+        #     if not self.outputPath:
+        #         slicer.util.infoDisplay("Please select the output folder.", windowTitle="Select Output")
+        #         return  
+        #     else:
+        #         self.loadDataset()  
+        # else:
+        #     self.loadDataset()
+
+        # if self.datasetPath and self.outputPath:
+        #     self.loadDataset()
+
+        # self.loadedPatients.clear()
+        # self.currentPatientIndex = 0
+        # self.classificationData.clear()
+        # self.clearTable()
         self.loadedPatients.clear()
         self.currentPatientIndex = 0
-        self.classificationData.clear()
-        self.clearTable()
         self.randomPatientsList = []
         self.currentRandomPatientIndex = 0
 
@@ -465,7 +508,8 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             allPatientIDs = self.logic.getAllPatientIDs(self.datasetPath) 
 
             self.allPatientsClassified = all(
-                self.classificationData[patientID] is not None for patientID in allPatientIDs
+                self.classificationData[pid] is not None and self.classificationData[pid] != ""
+                for pid in allPatientIDs
             )
 
             if self.allPatientsClassified:
@@ -491,30 +535,34 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.populatePatientDropdown()
 
-        allPatientIDs = self.logic.getAllPatientIDs(self.datasetPath)  
+        # allPatientIDs = self.logic.getAllPatientIDs(self.datasetPath)  
 
-        if not allPatientIDs:
-            slicer.util.errorDisplay("⚠️ No patients found in the dataset!", windowTitle="Error")
-            return  
+        # if not allPatientIDs:
+        #     slicer.util.errorDisplay("⚠️ No patients found in the dataset!", windowTitle="Error")
+        #     return  
 
-        if self.allPatientsClassified:
-            firstPatientID = allPatientIDs[0]
-        else:
-            for patientID in allPatientIDs:
-                if self.classificationData.get(patientID) is None:  
-                    firstPatientID = patientID
-                    break
-            else:
-                firstPatientID = allPatientIDs[0]  
+        # if self.allPatientsClassified:
+        #     firstPatientID = allPatientIDs[0]
+        # else:
+        #     for patientID in allPatientIDs:
+        #         if self.classificationData.get(patientID) is None:  
+        #             firstPatientID = patientID
+        #             break
+        #     else:
+        #         firstPatientID = allPatientIDs[0]  
 
-        firstPatientFiles = self.logic.getPatientFilesForReview(self.datasetPath, firstPatientID, self.isHierarchical)
+        # firstPatientFiles = self.logic.getPatientFilesForReview(self.datasetPath, firstPatientID, self.isHierarchical)
 
-        if firstPatientFiles:
-            self.currentPatientID = firstPatientID
-            self.loadPatientImages((firstPatientID, firstPatientFiles))
-            self.disableAllButtons(False)
-        else:
-            slicer.util.errorDisplay(f"⚠️ No images found for patient {firstPatientID}!", windowTitle="Error")
+        # if firstPatientFiles:
+        #     print(firstPatientFiles)
+        #     self.currentPatientID = firstPatientID
+
+        #     self.patientHashesFromCSV = self.logic.loadHashesFromCSV(self.datasetPath, self.outputPath)
+
+        #     self.loadNextPatient()
+        #     self.disableAllButtons(False)
+        # else:
+        #     slicer.util.errorDisplay(f"⚠️ No images found for patient {firstPatientID}!", windowTitle="Error")
 
         if self.mode == ADVANCED_MODE:
             self.ui.labelInputPath_advanced.setText(f"Input Path: {self.datasetPath}")
@@ -538,6 +586,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             
     def onCheckToggled(self, checked: bool) -> None:
         """Activates or deactivates random review and manages button states."""
+
         if checked:
             self.manualReviewMode = False
             self.ui.reviewButton.setEnabled(False)
@@ -552,7 +601,11 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                         item.setForeground(qt.QBrush(qt.QColor("black")))  
 
             self.classificationData = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
-            self.allPatientsClassified = None not in self.classificationData.values()
+
+            self.allPatientsClassified = all(
+                label is not None and label != ""
+                for label in self.classificationData.values()
+            )
 
             if not self.allPatientsClassified:
                 slicer.util.infoDisplay("At the end of the classification, the automatic review will start.", windowTitle="Random Review Mode")
@@ -565,6 +618,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 self.ui.nextPatientButton.setEnabled(False)
 
         else:
+  
             self.inRandomView = False
             self.randomPatientsList = []
             self.currentRandomPatientIndex = 0
@@ -577,6 +631,8 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.ui.nextPatientButton.setEnabled(False)
 
         self.updateButtonStates()
+
+
 
     def startRandomCheck(self):
         import random
@@ -614,7 +670,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         patientsByClass = {}  
 
         for patientID, classLabel in classifiedPatients.items():
-            if classLabel is not None:  
+            if classLabel is not None and classLabel != "DUPLICATE":
                 if classLabel not in patientsByClass:
                     patientsByClass[classLabel] = []
                 patientsByClass[classLabel].append(patientID)
@@ -654,10 +710,10 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         patientFiles = self.logic.getPatientFilesForReview(self.datasetPath, patientID, self.isHierarchical)
 
         if patientFiles:
+            self.manualReviewMode = True  
             slicer.mrmlScene.Clear(0)
             self.updateTable()
             self.loadPatientImages((patientID, patientFiles))
-            self.manualReviewMode = True  
             self.disableAllButtons(False)
         else:
             slicer.util.errorDisplay(f"⚠️ No images found for patient {patientID}!", windowTitle="Error")
@@ -702,35 +758,134 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.updateButtonStates()
 
     def loadNextPatient(self):
-        """Loads the next unclassified patient. If all are classified, display a completion message."""
-        
-        unclassifiedPatients = [patientID for patientID, classLabel in self.classificationData.items() if classLabel is None]
 
-        if unclassifiedPatients:
-            nextPatientID = unclassifiedPatients[0]
-            patientFiles = self.logic.getPatientFilesForReview(self.datasetPath, nextPatientID, self.isHierarchical)
+        unclassified = [
+            pid for pid, label in self.classificationData.items()
+            if label is None or str(label).strip().lower() in ("", "none")
+        ]
 
-            if patientFiles:
-                self.currentPatientID = nextPatientID  
-                slicer.mrmlScene.Clear(0)
-                self.loadPatientImages((nextPatientID, patientFiles))
+        for patientID in unclassified:
+            patientFiles = self.logic.getPatientFilesForReview(self.datasetPath, patientID, self.isHierarchical)
+            if not patientFiles:
+                continue
+
+            # Compute hash
+            from ClassAnnotationLib.ClassAnnotationUtils import compute_patient_hashes, findOriginalFile
+            originalPaths = findOriginalFile(self.datasetPath, patientID, self.isHierarchical)
+            hashSet = set(compute_patient_hashes(originalPaths))
+            currentHashString = "|".join(sorted(hashSet))
+
+            # Load CSV hashes
+            mode = getattr(self, "mode", "standard")
+            basePath = self.datasetPath if mode == "standard" else self.outputPath
+            self.patientHashesFromCSV = self.logic.loadHashesFromCSV(self.datasetPath, self.outputPath)
+
+            isDup, originalID = self.isPatientDuplicate(patientID, currentHashString)
+            if isDup:
+                self.markAsDuplicate(patientID, originalID)
+                continue
+
+            # Not duplicate, load it
+            if self.loadPatientImages((patientID, patientFiles)):
+                self.currentPatientID = patientID
                 self.disableAllButtons(False)
+                return
             else:
-                slicer.util.errorDisplay(f"⚠️ No images found for patient {nextPatientID}!", windowTitle="Error")
-        
-        else:
+                self.currentPatientID=''
+                continue
+
+        # Nessun paziente valido
+        slicer.mrmlScene.Clear(0)
+        slicer.util.infoDisplay("✔️ All patients classified!", windowTitle="Classification Complete")
+        self.currentPatientID = ""
+        self.updateTable()
+
+    def isPatientDuplicate(self, patientID, currentHashString):
+        for existingID, existingHashStr in self.patientHashesFromCSV.items():
+            if not existingHashStr.strip():
+                continue
+            if currentHashString == existingHashStr.strip():
+                return True, existingID
+        return False, None
+    
+    def markAsDuplicate(self, patientID, duplicateOfID):
+        slicer.util.warningDisplay(
+            f"⚠️ Patient {patientID} is a duplicate of {duplicateOfID}. It will be skipped.",
+            windowTitle="Duplicate Detected"
+        )
+        self.classificationData[patientID] = "DUPLICATE"
+        self.logic.saveClassificationData(self.datasetPath, self.classificationData, self.outputPath)
+        self.updateTable()
+        self.currentPatientID = ""
+
+    def tryLoadPatient(self, patientID, fileList):
+        from ClassAnnotationLib.ClassAnnotationUtils import compute_patient_hashes, findOriginalFile
+
+        self.patientHashesFromCSV = self.logic.loadHashesFromCSV(self.datasetPath, self.outputPath)
+        try:
             slicer.mrmlScene.Clear(0)
-            slicer.util.infoDisplay("✔️ All patients classified!", windowTitle="Classification Complete")
-            self.currentPatientID = ""  
+            self.clearPreviousPatientNodes()
+
+            success = self.loadPatientImages((patientID, fileList))
+            if not success:
+                self.currentPatientID = ""
+                slicer.util.errorDisplay(f"❌ Error loading patient {patientID}: No images found", windowTitle="Load Error")
+                return
+
+            self.currentPatientID = patientID
+
+            # hash
+            isHierarchical = self.logic.isHierarchicalDataset(self.datasetPath)
+            originalFilePaths = findOriginalFile(self.datasetPath, patientID, isHierarchical)
+            hashSet = set(compute_patient_hashes(originalFilePaths))
+            currentHashStr = "|".join(sorted(hashSet))
+
+            self.patientHashesFromCSV = self.logic.loadHashesFromCSV(self.datasetPath, self.outputPath)
+
+            for existingID, existingHashStr in self.patientHashesFromCSV.items():
+                if existingID == patientID or not existingHashStr.strip():
+                    continue
+
+                existingHashSet = set(existingHashStr.strip().lower().split('|'))
+                if set(h.lower() for h in hashSet) == existingHashSet:
+        
+                    slicer.util.warningDisplay(
+                        f"⚠️ Patient {patientID} is a duplicate of {existingID}. It will be skipped.",
+                        windowTitle="Duplicate Detected"
+                    )
+
+                    self.classificationData[patientID] = "DUPLICATE"
+                    self.logic.saveClassificationData(self.datasetPath, self.classificationData, self.outputPath)
+                    self.updateTable()
+
+                    slicer.app.processEvents()
+                    slicer.mrmlScene.Clear(0)
+                    self.clearPreviousPatientNodes()
+                    self.currentPatientID = ""
+
+                    if not (self.manualReviewMode or self.inRandomView or self.fromOverviewSelection):
+                        self.loadNextPatient()
+                    return
+
             self.updateTable()
+            slicer.app.processEvents()
+
+        except Exception as e:
+            slicer.util.errorDisplay(f"❌ Failed to load patient {patientID}: {str(e)}", windowTitle="Error")
+
+    def clearPreviousPatientNodes(self):
+        for node in getattr(self, "loadedPatients", []):
+            slicer.mrmlScene.RemoveNode(node)
+        self.loadedPatients = []
 
     def loadPatientImages(self, patientData):
         import numpy as np
-        
-        """Loads all images of a patient, handling DICOM and other formats."""
+        import SimpleITK as sitk
+        import sitkUtils
+
         patientID, fileList = patientData
         self.loadedPatients = []
-        self.currentPatientID = patientID  
+        # self.currentPatientID = patientID
 
         dicomExtensions = (".dcm", ".DCM")
         otherExtensions = tuple(ext for ext in SUPPORTED_FORMATS if ext.lower() not in dicomExtensions)
@@ -739,20 +894,20 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         otherFiles = [f for f in fileList if f.lower().endswith(otherExtensions)]
 
         hasVolume = False
-        volumeNode = None  
+        volumeNode = None
         segmentationFiles = []
         volumeFiles = []
 
         try:
             if dicomFiles:
-                dicomDir = os.path.dirname(dicomFiles[0])  
+                dicomDir = os.path.dirname(dicomFiles[0])
                 reader = sitk.ImageSeriesReader()
-                dicomSeries = reader.GetGDCMSeriesFileNames(dicomDir)  
+                dicomSeries = reader.GetGDCMSeriesFileNames(dicomDir)
                 reader.SetFileNames(dicomSeries)
-                sitkImage = reader.Execute()  
+                sitkImage = reader.Execute()
 
                 volumeNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode")
-                volumeNode.SetName(f"{patientID}_DICOM") 
+                volumeNode.SetName(f"{patientID}_DICOM")
                 sitkUtils.PushVolumeToSlicer(sitkImage, volumeNode)
 
                 if volumeNode:
@@ -761,11 +916,11 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
             for filePath in otherFiles:
                 try:
-                    sitkImage = sitk.ReadImage(filePath) 
-                    numpyImage = sitk.GetArrayFromImage(sitkImage).astype(np.float32)  
+                    sitkImage = sitk.ReadImage(filePath)
+                    numpyImage = sitk.GetArrayFromImage(sitkImage).astype(np.float32)
 
                     numpyImage_uint8 = numpyImage.astype(np.uint8)
-                    numpyImage_uint8[numpyImage_uint8 >= 120] = 120  
+                    numpyImage_uint8[numpyImage_uint8 >= 120] = 120
                     numpyImage_float32 = numpyImage_uint8.astype(np.float32)
 
                     if np.sum(numpyImage == numpyImage_float32) == np.prod(numpyImage.shape):
@@ -778,25 +933,22 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
             for filePath in volumeFiles:
                 try:
-                    sitkImage = sitk.ReadImage(filePath)  
-                    
+                    sitkImage = sitk.ReadImage(filePath)
                     volumeNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode")
                     if self.isFlat:
-                        volumeNode.SetName(f"{os.path.basename(filePath)}") 
+                        volumeNode.SetName(f"{os.path.basename(filePath)}")
                     elif self.isHierarchical:
-                        volumeNode.SetName(f"{patientID}_{os.path.basename(filePath)}") 
-
+                        volumeNode.SetName(f"{patientID}_{os.path.basename(filePath)}")
                     sitkUtils.PushVolumeToSlicer(sitkImage, volumeNode)
 
                     if volumeNode:
                         self.loadedPatients.append(volumeNode)
-                        hasVolume = True  
+                        hasVolume = True
 
                 except Exception as e:
                     slicer.util.errorDisplay(f"❌ Error loading volume {filePath}: {str(e)}", windowTitle="Error")
 
             existingSegmentationNode = slicer.mrmlScene.GetFirstNodeByName(f"{patientID}_Segmentation")
-
             if hasVolume:
                 if not existingSegmentationNode:
                     segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
@@ -806,15 +958,14 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
             for filePath in segmentationFiles:
                 try:
-                    sitkImage = sitk.ReadImage(filePath)  
+                    sitkImage = sitk.ReadImage(filePath)
                     sitkLabelMap = sitk.Cast(sitkImage, sitk.sitkUInt8)
 
                     if hasVolume:
                         labelmapVolumeNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
-                        sitkUtils.PushVolumeToSlicer(sitkLabelMap, labelmapVolumeNode)  
-
+                        sitkUtils.PushVolumeToSlicer(sitkLabelMap, labelmapVolumeNode)
                         slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(labelmapVolumeNode, segmentationNode)
-                        slicer.mrmlScene.RemoveNode(labelmapVolumeNode)  
+                        slicer.mrmlScene.RemoveNode(labelmapVolumeNode)
                         self.loadedPatients.append(segmentationNode)
                     else:
                         labelmapVolumeNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
@@ -832,21 +983,29 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.setSliceViewerLayers(background=self.loadedPatients[0])
             slicer.app.processEvents()
             slicer.util.resetSliceViews()
+            self.currentPatientID = patientID 
         else:
+            self.currentPatientID=''
             slicer.util.errorDisplay(f"❌ Error: No images loaded for {patientID}", windowTitle="Error")
-        
+
         self.updateTable()
+
+        loadedNodes = slicer.util.getNodesByClass("vtkMRMLScalarVolumeNode")
+        if self.loadedPatients:
+            return True
+        else:
+            return False
+
 
     def onClassifyImage(self, classLabel):
         """Classify the current patient, update the CSV, refresh the table, and update LCD counters."""
 
         if not self.loadedPatients:
-            slicer.util.errorDisplay("❌ No patient loaded!", windowTitle="Error")
-            return
+            self.syncLoadedPatientFromViewer()
 
-        if not self.currentPatientID:
-            slicer.util.errorDisplay("❌ Error: Unable to determine the patient!", windowTitle="Error")
-            return  
+        if not self.loadedPatients or not self.currentPatientID:
+            slicer.util.errorDisplay("❌ Unable to classify: no patient is currently loaded.", windowTitle="Classification Error")
+            return
 
         classifiedPatients = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
         oldClass = classifiedPatients.get(self.currentPatientID)  
@@ -872,24 +1031,21 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.updateTable()
         self.populatePatientDropdown()
 
-        self.allPatientsClassified = None not in self.classificationData.values()
-
-        if self.allPatientsClassified:
-            slicer.util.infoDisplay("✔️ All patients classified!", windowTitle="Classification Complete")
-            slicer.app.processEvents()
-
-            if self.ui.checkBox.isChecked():
-                slicer.util.infoDisplay("✔️ Starting automatic review. Click 'Next' to continue.", windowTitle="Review Mode")
-                slicer.app.processEvents()  
-                self.startRandomCheck()
-            return  
+        self.allPatientsClassified = all(
+            label is not None and label != "" for label in self.classificationData.values()
+        )
 
         self.updateButtonStates()
         slicer.mrmlScene.Clear(0)  
-
         slicer.app.processEvents()  
 
-        self.loadNextPatient()  
+        if self.allPatientsClassified:
+            slicer.util.infoDisplay("✔️ All patients classified!", windowTitle="Classification Complete")
+            if self.ui.checkBox.isChecked():
+                slicer.util.infoDisplay("✔️ Starting automatic review. Click 'Next' to continue.", windowTitle="Review Mode")
+                self.startRandomCheck()
+        else:
+            self.loadNextPatient()
 
         self.disableClassificationButtons(False)  
         
@@ -975,7 +1131,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.patientDropdown.addItem("-")
 
         patients = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
-        classifiedPatients = {patientID: classLabel for patientID, classLabel in patients.items() if classLabel is not None}
+        classifiedPatients = {patientID: classLabel for patientID, classLabel in patients.items() if classLabel is not None and classLabel!="DUPLICATE"}
 
         if not classifiedPatients:
             return  
@@ -984,12 +1140,13 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.ui.patientDropdown.addItem(patientID)
 
     def onPatientSelected(self):
-        """Load the selected patient from the table for classification after confirmation."""
+        """Load the selected patient from the table for classification."""
+        from ClassAnnotationLib.ClassAnnotationUtils import compute_patient_hashes
+
         selectedItems = self.ui.classificationTable.selectedItems()
-        
         if not selectedItems:
             return
-        
+
         selectedRow = selectedItems[0].row()
         patientID = self.ui.classificationTable.item(selectedRow, 0).text().replace("→ ", "").strip()
 
@@ -997,29 +1154,26 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.errorDisplay("⚠️ Invalid patient selected!", windowTitle="Error")
             return
 
-        # Show confirmation dialog
-        confirmDialog = qt.QMessageBox()
-        confirmDialog.setIcon(qt.QMessageBox.Question)
-        confirmDialog.setWindowTitle("Confirm Patient Load")
-        confirmDialog.setText(f"Are you sure you want to load patient {patientID}?")
-        confirmDialog.setStandardButtons(qt.QMessageBox.Yes | qt.QMessageBox.No)
-        confirmDialog.setDefaultButton(qt.QMessageBox.No)
-
-        response = confirmDialog.exec_()
-
-        if response == qt.QMessageBox.No:
-            return  # If the user clicks "No", do nothing
-
-        # Load patient files if user confirms
         patientFiles = self.logic.getPatientFilesForReview(self.datasetPath, patientID, self.isHierarchical)
-
-        if patientFiles:
-            slicer.mrmlScene.Clear(0)
-            self.loadPatientImages((patientID, patientFiles))
-            self.currentPatientID = patientID  
-            self.disableAllButtons(False)  
-        else:
+        if not patientFiles:
             slicer.util.errorDisplay(f"⚠️ No images found for patient {patientID}!", windowTitle="Error")
+            return
+
+        confirmation = qt.QMessageBox.question(
+            slicer.util.mainWindow(),
+            "Confirm Patient Load",
+            f"Are you sure you want to load patient {patientID}?",
+            qt.QMessageBox.Yes | qt.QMessageBox.No,
+            qt.QMessageBox.No
+        )
+
+        if confirmation != qt.QMessageBox.Yes:
+            return
+
+        slicer.mrmlScene.Clear(0)
+        self.tryLoadPatient(patientID, patientFiles)
+        self.disableAllButtons(False)
+
 
 
 class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
@@ -1036,8 +1190,6 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
         return any(any(f.endswith(tuple(SUPPORTED_FORMATS)) for f in os.listdir(os.path.join(datasetPath, d))) for d in subdirs)
 
     def loadExistingPatientsFromCSV(self, csvFilePath: str) -> dict:
-        """Loads existing patients from CSV, including unclassified ones."""
-        
         existingPatients = {}
 
         if not os.path.exists(csvFilePath):
@@ -1045,19 +1197,16 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
 
         try:
             with open(csvFilePath, mode='r') as file:
-                reader = csv.reader(file)
-                next(reader)
+                reader = csv.DictReader(file)
                 for row in reader:
-                    if len(row) == 2:
-                        patientID = row[0]
-                        classLabel = row[1] if row[1].isdigit() else None  
-                        existingPatients[patientID] = int(classLabel) if classLabel is not None else None
-
+                    patientID = row.get("Patient ID")
+                    classLabel = row.get("Class")
+                    existingPatients[patientID] = int(classLabel) if classLabel and classLabel.isdigit() else classLabel
         except Exception as e:
             slicer.util.errorDisplay(f"❌ Error reading CSV: {str(e)}", windowTitle="Error")
 
         return existingPatients
-        
+            
     def getPatientFiles(self, patientPath: str) -> List[str]:
         """Returns a list of a patient's files, excluding the output folder."""
         if not os.path.exists(patientPath):
@@ -1072,46 +1221,50 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
         return files
 
     def saveClassificationData(self, datasetPath: str, classificationData: dict, outputFolder: str):
-        """Save the classification data in CSV and organize files in output folders."""
-        from ClassAnnotationLib.ClassAnnotationUtils import movePatientIfReclassified, findOriginalFile
-        
+        from ClassAnnotationLib.ClassAnnotationUtils import (
+            movePatientIfReclassified,
+            findOriginalFile,
+            compute_patient_hashes
+        )
+
         mode = getattr(self, "mode", STANDARD_MODE)
-
-        if mode == "standard":
-            finalOutputFolder = os.path.join(datasetPath, OUTPUT_FOLDER)  
-        else:
-            finalOutputFolder = os.path.join(outputFolder, OUTPUT_FOLDER) 
-
-        if not os.path.exists(finalOutputFolder):
-            os.makedirs(finalOutputFolder)
-
+        finalOutputFolder = os.path.join(datasetPath if mode == "standard" else outputFolder, OUTPUT_FOLDER)
+        os.makedirs(finalOutputFolder, exist_ok=True)
         csvFilePath = os.path.join(finalOutputFolder, "classification_results.csv")
 
         try:
             existingPatients = self.loadExistingPatientsFromCSV(csvFilePath)
-
-            for patientID, classLabel in classificationData.items():
-                existingPatients[patientID] = classLabel
+            isHierarchical = self.isHierarchicalDataset(datasetPath)  
 
             with open(csvFilePath, mode='w', newline='') as file:
                 writer = csv.writer(file)
-                writer.writerow(["Patient ID", "Class"])
-                for patientID, classLabel in sorted(existingPatients.items()):  
-                    writer.writerow([patientID, classLabel if classLabel is not None else ""])
+                writer.writerow(["Patient ID", "Class", "Hash"])
 
-            isHierarchical = self.isHierarchicalDataset(datasetPath)
+                for patientID, classLabel in sorted(classificationData.items()):
+                    hashString = ""
+                    if classLabel is not None and classLabel != "DUPLICATE":
+                        try:
+                            originalFilePaths = findOriginalFile(datasetPath, patientID, isHierarchical)
+                            hashList = sorted(compute_patient_hashes(originalFilePaths))
+                            hashString = "|".join(hashList)
+                        except Exception as e:
+                            print(f"[WARNING] Failed to compute hash for {patientID}: {str(e)}")
 
-            for patientID, classLabel in existingPatients.items():
-                if classLabel is not None:
-                    classFolder = os.path.join(finalOutputFolder, f"class{classLabel}")  
-                    if not os.path.exists(classFolder):
-                        os.makedirs(classFolder)
+                    writer.writerow([
+                        patientID,
+                        classLabel if classLabel is not None else "",
+                        hashString
+                    ])
+
+            for patientID, classLabel in classificationData.items():
+                if classLabel is not None and classLabel != "DUPLICATE":
+                    classFolder = os.path.join(finalOutputFolder, f"class{classLabel}")
+                    os.makedirs(classFolder, exist_ok=True)
 
                     movePatientIfReclassified(finalOutputFolder, patientID, classLabel)
 
                     patientFolder = os.path.join(classFolder, patientID)
-                    if not os.path.exists(patientFolder):
-                        os.makedirs(patientFolder)
+                    os.makedirs(patientFolder, exist_ok=True)
 
                     originalFilePaths = findOriginalFile(datasetPath, patientID, isHierarchical)
                     for originalFilePath in originalFilePaths:
@@ -1120,9 +1273,14 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
                             destPath = os.path.join(patientFolder, fileName)
                             shutil.copy2(originalFilePath, destPath)
 
+            widget = slicer.modules.classannotation.widgetRepresentation().self()
+            if hasattr(widget, 'patientHashesFromCSV'):
+                widget.patientHashesFromCSV = self.loadHashesFromCSV(datasetPath, outputFolder)
+
         except Exception as e:
             slicer.util.errorDisplay(f"❌ Error saving CSV: {str(e)}", windowTitle="Error")
-        
+
+            
     def getPatientFilesForReview(self, datasetPath: str, patientID: str, isHierarchical: bool) -> List[str]:
         """Finds images for a previously classified patient."""
         patientFiles = []
@@ -1154,22 +1312,30 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
             try:
                 with open(csvFilePath, mode='r') as file:
                     reader = csv.reader(file)
-                    next(reader)  
+                    next(reader)  # skip header
                     
                     for row in reader:
-                        if len(row) == 2:
-                            patientID = row[0]
-                            classLabel = row[1] if row[1].isdigit() else None
-                            classifiedPatients[patientID] = int(classLabel) if classLabel is not None else None
+                        if len(row) >= 2:
+                            patientID = row[0].strip()
+                            rawLabel = row[1].strip()
+
+                            if rawLabel.isdigit():
+                                classLabel = int(rawLabel)
+                            elif rawLabel == "DUPLICATE":
+                                classLabel = "DUPLICATE"
+                            else:
+                                classLabel = None
+
+                            classifiedPatients[patientID] = classLabel
 
             except Exception as e:
-                slicer.util.errorDisplay(f"❌ Error while reading CSV {str(e)}", windowTitle="Error")
+                slicer.util.errorDisplay(f"❌ Error while reading CSV: {str(e)}", windowTitle="Error")
 
+        # Add any unclassified patients found in the dataset
         allPatientIDs = self.getAllPatientIDs(datasetPath)
-
         for patientID in allPatientIDs:
             if patientID not in classifiedPatients:
-                classifiedPatients[patientID] = None  
+                classifiedPatients[patientID] = None
 
         return classifiedPatients
 
@@ -1194,7 +1360,7 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
                 next(reader)  
                     
                 for row in reader:
-                    if len(row) == 2 and row[1].isdigit():
+                    if len(row) >= 2 and row[1].isdigit():
                         classLabel = int(row[1])
                         classCounts[classLabel] = classCounts.get(classLabel, 0) + 1 
 
@@ -1219,3 +1385,33 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
                 patientIDs.add(patientID)
         
         return sorted(patientIDs)
+
+    def loadHashesFromCSV(self, datasetPath: str, outputPath: str) -> Dict[str, str]:
+        import csv
+        import os
+
+        mode = getattr(self, "mode", "standard")
+
+        if mode == "standard":
+            csvPath = os.path.join(datasetPath, "output", "classification_results.csv")
+        else:
+            csvPath = os.path.join(outputPath, "output", "classification_results.csv")
+
+        patientHashes = {}
+
+        if not os.path.exists(csvPath):
+            return patientHashes
+
+        try:
+            with open(csvPath, mode='r') as file:
+                reader = csv.DictReader(file)
+                for row in reader:
+                    patientID = row.get("Patient ID")
+                    hashStr = row.get("Hash")
+
+                    if patientID and hashStr and hashStr.strip():
+                        patientHashes[patientID.strip()] = hashStr.strip()
+        except Exception as e:
+            print(f"[ERROR] Failed to read CSV: {str(e)}")
+
+        return patientHashes

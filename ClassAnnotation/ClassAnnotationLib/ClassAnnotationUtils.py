@@ -1,6 +1,6 @@
 import os
 import shutil
-from typing import List
+from typing import List, Set
 
 def movePatientIfReclassified(outputFolder: str, patientID: str, newClass: str):    
         """Moves the patient folder to the new class if reclassified."""
@@ -43,3 +43,52 @@ def findOriginalFile(datasetPath: str, patientID: str, isHierarchical: bool) -> 
                         originalFiles.append(os.path.join(root, file))
 
         return originalFiles
+
+def compute_file_hash(path: str) -> str:
+    import hashlib
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def compute_patient_hashes(fileList):
+    import hashlib
+    import SimpleITK as sitk
+    import os
+
+    def hash_volume(image):
+        array = sitk.GetArrayFromImage(image)
+        return hashlib.sha256(array.tobytes()).hexdigest()
+
+    hashList = []
+
+    fileList = [
+        f for f in fileList
+        if os.path.isfile(f) and not os.path.basename(f).startswith('.') 
+    ]
+
+    dicomFiles = [f for f in fileList if f.lower().endswith(".dcm")]
+    otherFiles = [f for f in fileList if not f.lower().endswith(".dcm")]
+
+    if dicomFiles:
+        try:
+            reader = sitk.ImageSeriesReader()
+            dicomDir = os.path.dirname(dicomFiles[0])
+            dicomSeries = reader.GetGDCMSeriesFileNames(dicomDir)
+            reader.SetFileNames(dicomSeries)
+            image = reader.Execute()
+            hashList.append(hash_volume(image))
+        except Exception:
+            pass  
+
+    for filePath in otherFiles:
+        try:
+            image = sitk.ReadImage(filePath)
+            hashList.append(hash_volume(image))
+        except Exception:
+            pass  
+
+    if not hashList:
+        return [""] 
+
+    combinedHash = hashlib.sha256("".join(hashList).encode()).hexdigest()
+    return [combinedHash]
