@@ -314,6 +314,30 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         for button in self.classButtons.values():
             button.setEnabled(not disable)
 
+    def resetModuleState(self):
+        self.classificationData.clear()
+        self.classButtons.clear()
+        self.classLCDs.clear()
+        self.classCounters.clear()
+        self.loadedPatients.clear()
+        self.currentPatientIndex = 0
+        self.randomPatientsList = []
+        self.currentRandomPatientIndex = 0
+        self.allPatientsClassified = False
+        self.manualReviewMode = False
+        self.inRandomView = False
+        self.currentPatientID = ""
+        self.patientHashesFromCSV = {}
+
+        self.ui.classificationTable.setRowCount(0)
+        self.ui.patientDropdown.clear()
+        self.ui.patientDropdown.addItem("-")
+
+        self.ui.labelInputPath.setText("Input Path: ")
+        self.ui.labelOutputPath.setText("Output Path: ")
+        self.ui.labelInputPath_advanced.setText("Input Path: ")
+        self.ui.labelOutputPath_advanced.setText("Output Path: ")
+
     def updateButtonStates(self):
         """Update button states based on the current situation."""
         datasetLoaded = bool(self.datasetPath)
@@ -442,9 +466,12 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if confirm.clickedButton() == noButton:
             slicer.util.infoDisplay("Dataset loading cancelled.", windowTitle="Cancelled")
             return  
+        
+        self.resetModuleState()
 
 
         slicer.mrmlScene.Clear(0)
+        slicer.app.processEvents()
         self.updateTable()
         self.currentPatientID = ""  
 
@@ -457,19 +484,21 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.labelInputPath_advanced.setText(f"Input Path: {self.datasetPath}")
         # self.ui.labelInputPath.setText(f"Input Path: {self.datasetPath}")
 
-        shouldLoad = True
-        if self.mode == ADVANCED_MODE:
-            if not self.outputPath:
-                slicer.util.infoDisplay("Please select the output folder.", windowTitle="Select Output")
-                shouldLoad = False
-
-        if shouldLoad:
-            self.loadDataset()
-
+        # shouldLoad = True
         # if self.mode == ADVANCED_MODE:
         #     if not self.outputPath:
         #         slicer.util.infoDisplay("Please select the output folder.", windowTitle="Select Output")
-        #         return  
+        #         shouldLoad = False
+
+        # if shouldLoad:
+        #     self.loadDataset()
+
+        if self.mode == ADVANCED_MODE:
+            if not self.outputPath:
+                slicer.util.infoDisplay("Please select the output folder.", windowTitle="Select Output")
+                return  
+            
+        self.loadDataset() 
         #     else:
         #         self.loadDataset()  
         # else:
@@ -518,7 +547,8 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         maxClass = 4 
         if self.classificationData:
-            existingClasses = [c for c in self.classificationData.values() if c is not None]
+            existingClasses = [int(c) for c in self.classificationData.values() if c is not None and str(c).isdigit()]
+            # existingClasses = [c for c in self.classificationData.values() if c is not None]
             if existingClasses:
                 maxClass = max(existingClasses)
 
