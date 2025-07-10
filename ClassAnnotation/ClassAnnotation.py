@@ -1325,52 +1325,28 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
         os.makedirs(finalOutputFolder, exist_ok=True)
         csvFilePath = os.path.join(finalOutputFolder, "classification_results.csv")
 
-        existingFolders = os.listdir(finalOutputFolder)
-        numericalFolders = [f for f in existingFolders if f.startswith("class") and f[5:].isdigit()]
-
         widget = slicer.modules.classannotation.widgetRepresentation().self()
 
-        anyRenamed = False
-        for classID, button in widget.classButtons.items():
-            if button.text.strip() != f"Class {classID}":
-                anyRenamed = True
-                break
-
-        if anyRenamed:
-            for folder in numericalFolders:
-                folderPath = os.path.join(finalOutputFolder, folder)
-                try:
-                    shutil.rmtree(folderPath)
-                    print(f"[INFO] Removed obsolete class folder: {folderPath}")
-                except Exception as e:
-                    print(f"[WARNING] Could not remove {folderPath}: {e}")
-
-    
         existingClassNames = {button.text.strip().replace(" ", "_").replace("/", "_") for button in widget.classButtons.values()}
         for folder in os.listdir(finalOutputFolder):
             folderPath = os.path.join(finalOutputFolder, folder)
             if os.path.isdir(folderPath) and folder.startswith("class") and folder not in existingClassNames:
-                try:
-                    shutil.rmtree(folderPath)
-                    print(f"[INFO] Removed outdated renamed folder: {folderPath}")
-                except Exception as e:
-                    print(f"[WARNING] Could not remove renamed folder {folderPath}: {e}")
-
-
+                shutil.rmtree(folderPath)
+                    
         try:
-            existingPatients = self.loadExistingPatientsFromCSV(csvFilePath)
             isHierarchical = self.isHierarchicalDataset(datasetPath)
             patientToClassName = {}
 
-            previousNames = {}
+            previousClassMap = {}
             if os.path.exists(csvFilePath):
                 with open(csvFilePath, newline='') as oldFile:
                     reader = csv.DictReader(oldFile)
                     for row in reader:
-                        pid = row["Patient ID"]
+                        pid = row.get("Patient ID", "").strip()
+                        classLabel = row.get("Class", "").strip()
                         className = row.get("Class Name", "").strip()
-                        if className:
-                            previousNames[pid] = className
+                        if pid:
+                            previousClassMap[pid] = (classLabel, className)
 
             with open(csvFilePath, mode='w', newline='') as file:
                 writer = csv.writer(file)
@@ -1381,27 +1357,17 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
                     className = ""
 
                     if classLabel is not None and classLabel != "DUPLICATE":
-                        if patientID in previousNames:
-                            className = previousNames[patientID]
-                        else:
-                            classButton = widget.classButtons.get(classLabel)
-                            defaultName = f"Class {classLabel}"
-                            if classButton:
-                                actualName = classButton.text.strip()
-                                if actualName != defaultName:
-                                    className = actualName 
-                                else:
-                                    className = ""  
-                            else:
-                                className = ""
+                        classButton = widget.classButtons.get(classLabel)
+                        defaultName = f"Class {classLabel}"
+                        if classButton:
+                            actualName = classButton.text.strip()
+                            className = actualName if actualName != defaultName else ""
                         patientToClassName[patientID] = className
 
-                        try:
-                            originalFilePaths = findOriginalFile(datasetPath, patientID, isHierarchical)
-                            hashList = sorted(compute_patient_hashes(originalFilePaths))
-                            hashString = "|".join(hashList)
-                        except Exception as e:
-                            print(f"[WARNING] Failed to compute hash for {patientID}: {str(e)}")
+                        originalFilePaths = findOriginalFile(datasetPath, patientID, isHierarchical)
+                        hashList = sorted(compute_patient_hashes(originalFilePaths))
+                        hashString = "|".join(hashList)
+
                     else:
                         patientToClassName[patientID] = None
 
@@ -1419,36 +1385,46 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
                 className = patientToClassName.get(patientID, "").strip()
                 classFolderName = className if className else f"class{classLabel}"
                 classFolderName = classFolderName.replace(" ", "_").replace("/", "_")
-                classFolder = os.path.join(finalOutputFolder, classFolderName)
-                os.makedirs(classFolder, exist_ok=True)
+                newClassFolder = os.path.join(finalOutputFolder, classFolderName)
+                os.makedirs(newClassFolder, exist_ok=True)
+
+                oldClassLabel, oldClassName = previousClassMap.get(patientID, (None, None))
+                if oldClassLabel is not None and oldClassLabel != str(classLabel):
+                    oldFolderName = oldClassName if oldClassName else f"class{oldClassLabel}"
+                    oldFolderName = oldFolderName.replace(" ", "_").replace("/", "_")
+                    oldPatientFolder = os.path.join(finalOutputFolder, oldFolderName, patientID)
+                    if os.path.exists(oldPatientFolder):
+                        shutil.rmtree(oldPatientFolder)
 
                 for folderName in os.listdir(finalOutputFolder):
-                    oldPatientFolder = os.path.join(finalOutputFolder, folderName, patientID)
-                    if os.path.exists(oldPatientFolder) and os.path.isdir(oldPatientFolder):
-                        try:
-                            shutil.rmtree(oldPatientFolder)
-                        except Exception as e:
-                            print(f"[WARNING] Could not remove old folder {oldPatientFolder}: {e}")
+                    potentialPath = os.path.join(finalOutputFolder, folderName, patientID)
+                    if os.path.exists(potentialPath) and os.path.isdir(potentialPath):
+                        shutil.rmtree(potentialPath)
 
-                patientFolder = os.path.join(classFolder, patientID)
-                os.makedirs(patientFolder, exist_ok=True)
-
+                newPatientFolder = os.path.join(newClassFolder, patientID)
+                os.makedirs(newPatientFolder, exist_ok=True)
                 try:
                     originalFilePaths = findOriginalFile(datasetPath, patientID, isHierarchical)
                     for originalFilePath in originalFilePaths:
                         if originalFilePath:
                             fileName = os.path.basename(originalFilePath)
-                            destPath = os.path.join(patientFolder, fileName)
+                            destPath = os.path.join(newPatientFolder, fileName)
                             if not os.path.exists(destPath):
                                 shutil.copy2(originalFilePath, destPath)
-                            else:
-                                print(f"[WARNING] File already exists, skipping: {destPath}")
-                except Exception as e:
-                    print(f"[ERROR] Failed to copy files for {patientID}: {e}")
+                except Exception as copy_error:
+                    print(f"[WARNING] Failed to copy files for {patientID}: {copy_error}")
 
+                
             if hasattr(widget, 'patientHashesFromCSV'):
                 widget.patientHashesFromCSV = self.loadHashesFromCSV(datasetPath, outputFolder)
 
+            for classFolder in os.listdir(finalOutputFolder):
+                fullClassPath = os.path.join(finalOutputFolder, classFolder)
+                if os.path.isdir(fullClassPath):
+                    subitems = [item for item in os.listdir(fullClassPath) if not item.startswith('.')]
+                    if len(subitems) == 0:
+                        shutil.rmtree(fullClassPath)
+                       
         except Exception as e:
             slicer.util.errorDisplay(f"❌ Error saving CSV: {str(e)}", windowTitle="Error")
 
