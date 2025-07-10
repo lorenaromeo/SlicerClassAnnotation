@@ -5,6 +5,7 @@ import SimpleITK as sitk
 import sitkUtils
 import qt
 import slicer
+from typing import Tuple
 from slicer.ScriptedLoadableModule import *
 from slicer.util import VTKObservationMixin
 from typing import List, Dict
@@ -141,10 +142,15 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         headerLabel.setStyleSheet("font-size: 12px; font-weight: bold; padding-bottom: 5px;")
         gridLayout.addWidget(headerLabel, 0, 1)  
 
+        _, classNamesFromCSV = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
+
         for classLabel in range(numClasses):
             row = classLabel + 1  
+            defaultName = f"Class {classLabel}"
+            customName = classNamesFromCSV.get(classLabel, defaultName)
+            button = qt.QPushButton(customName)
 
-            button = qt.QPushButton(f"Class {classLabel}")
+            # button = qt.QPushButton(f"Class {classLabel}")
             button.setStyleSheet(f"""
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
                             stop:0 {getLighterColor(classLabel)}, 
@@ -179,7 +185,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.classificationGroupBox.update()
 
     def renameClassButtons(self):
-        """Opens a window to rename classes buttons with a default layout and empty fields."""
+        """Open a dialog to rename class buttons with scroll layout and styled input fields."""
         dialog = qt.QDialog()
         dialog.setWindowTitle("Rename Class Buttons")
         dialog.setModal(True)
@@ -189,6 +195,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         mainLayout.setContentsMargins(10, 10, 10, 10)
         dialog.setLayout(mainLayout)
 
+        # Scrollable area
         scrollArea = qt.QScrollArea()
         scrollArea.setWidgetResizable(True)
         scrollWidget = qt.QWidget()
@@ -208,17 +215,23 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             label.setFixedWidth(100)
             label.setStyleSheet("font-size: 12px; font-weight: bold;")
 
-            inputField = qt.QLineEdit()  
-            inputField.setPlaceholderText(button.text)  
-            renameInputs[classLabel] = inputField  
+            inputField = qt.QLineEdit()
+            
+            try:
+                placeholder = button.text()  
+            except TypeError:
+                placeholder = button.text  
+
+            inputField.setPlaceholderText(placeholder)
+            renameInputs[classLabel] = inputField
 
             classRow.addWidget(label)
             classRow.addWidget(inputField)
-
             scrollLayout.addLayout(classRow)
 
         scrollLayout.addStretch(1)
 
+        # Apply & Cancel buttons
         buttonLayout = qt.QHBoxLayout()
 
         applyButton = qt.QPushButton("Apply")
@@ -231,11 +244,10 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         cancelButton.setStyleSheet(
             "background-color: #D32F2F; color: black; font-weight: bold; padding: 8px; border-radius: 6px;"
         )
-        cancelButton.clicked.connect(lambda: dialog.reject())
+        cancelButton.clicked.connect(dialog.reject)
 
         buttonLayout.addWidget(cancelButton)
         buttonLayout.addWidget(applyButton)
-
         mainLayout.addLayout(buttonLayout)
 
         dialog.exec()
@@ -243,15 +255,33 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def applyRenaming(self, renameInputs, dialog):
         """Apply the new labels to the buttons only if the fields are not empty."""
+        renamed = False
+
         for classLabel, inputField in renameInputs.items():
-            if isinstance(inputField, qt.QLineEdit):  
+            try:
+                newName = inputField.text().strip()
+            except TypeError:
                 newName = inputField.text.strip()  
-                if newName:  
-                    self.classButtons[classLabel].setText(newName)
 
-        dialog.accept()  
-        slicer.util.infoDisplay("Class names updated successfully!", windowTitle="Update Successful")
+            if newName:
+                button = self.classButtons[classLabel]
+                try:
+                    currentName = button.text().strip()
+                except TypeError:
+                    currentName = button.text.strip()
 
+                if newName != currentName:
+                    button.setText(newName)
+                    renamed = True
+
+        dialog.accept()
+
+        if renamed:
+            self.updateTable()
+            self.logic.saveClassificationData(self.datasetPath, self.classificationData, self.outputPath)
+            slicer.util.infoDisplay("Class names updated and saved!", windowTitle="Update Successful")
+        else:
+            slicer.util.infoDisplay("No changes applied.", windowTitle="No Update")
     
 
     def updateLCDCounters(self):
@@ -415,7 +445,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.errorDisplay("⚠️ Dataset contains both files and folders. Use a single format!", windowTitle="Error")
             return
 
-        self.classificationData = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
+        self.classificationData, _ = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
         allPatientIDs = self.logic.getAllPatientIDs(self.datasetPath)
 
         if not allPatientIDs:
@@ -439,6 +469,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.updateLCDCounters()
         self.updateTable()
         self.generateClassButtons()
+        
         self.updateButtonStates()
         self.loadNextPatient()
         self.syncLoadedPatientFromViewer()
@@ -523,7 +554,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.disableAllButtons(True)
             return
 
-        self.classificationData = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
+        self.classificationData, self.classNames= self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
         allPatientIDs = self.logic.getAllPatientIDs(self.datasetPath)
 
         if len(allPatientIDs) == 0:
@@ -558,6 +589,29 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.classCounters = self.logic.countPatientsPerClassFromCSV(self.datasetPath, self.outputPath)
 
         self.generateClassButtons()
+
+        csvFilePath = os.path.join(
+            self.outputPath if self.mode == ADVANCED_MODE else self.datasetPath,
+            OUTPUT_FOLDER,
+            "classification_results.csv"
+        )
+
+        customClassNames = {}
+
+        if os.path.exists(csvFilePath):
+            with open(csvFilePath, newline='') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    classStr = row.get("Class", "").strip()
+                    nameStr = row.get("Class Name", "").strip()
+                    if classStr and nameStr and classStr.isdigit():
+                        classID = int(classStr)
+                        if nameStr.lower() != f"class{classID}".lower():
+                            customClassNames[classID] = nameStr
+
+        for classID, newName in customClassNames.items():
+            if classID in self.classButtons:
+                self.classButtons[classID].setText(newName)
 
         for classLabel, count in self.classCounters.items():
             if classLabel in self.classLCDs:
@@ -630,7 +684,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                     if item:
                         item.setForeground(qt.QBrush(qt.QColor("black")))  
 
-            self.classificationData = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
+            self.classificationData, self.classNames = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
 
             self.allPatientsClassified = all(
                 label is not None and label != ""
@@ -673,7 +727,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.currentRandomPatientIndex = 0
         self.inRandomView = True  
 
-        classifiedPatients = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
+        classifiedPatients, self.classNames = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
 
         if not classifiedPatients:
             slicer.util.errorDisplay("⚠️ No classified patients found!", windowTitle="Error")
@@ -824,7 +878,6 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 self.currentPatientID=''
                 continue
 
-        # Nessun paziente valido
         slicer.mrmlScene.Clear(0)
         slicer.util.infoDisplay("✔️ All patients classified!", windowTitle="Classification Complete")
         self.currentPatientID = ""
@@ -1037,7 +1090,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.errorDisplay("❌ Unable to classify: no patient is currently loaded.", windowTitle="Classification Error")
             return
 
-        classifiedPatients = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
+        classifiedPatients, self.classNames = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
         oldClass = classifiedPatients.get(self.currentPatientID)  
 
         if oldClass is not None and oldClass == classLabel and not self.manualReviewMode:
@@ -1078,19 +1131,18 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.loadNextPatient()
 
         self.disableClassificationButtons(False)  
-        
+            
     def updateTable(self):
         from ClassAnnotationLib.ClassAnnotationUIUtils import classColors
-        
-        """Updes the table and flash both the arrow and the current patient ID."""
+
         self.clearTable()
 
         if not self.classificationData:
             return
 
         sceneIsEmpty = len(self.loadedPatients) == 0
-        self.blinkItem = None  
-        self.blinkPatientID = None  
+        self.blinkItem = None
+        self.blinkPatientID = None
 
         for idx, (patientID, classLabel) in enumerate(self.classificationData.items()):
             self.ui.classificationTable.insertRow(idx)
@@ -1099,7 +1151,18 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             displayID = f"→ {patientID}" if isCurrentPatient else patientID
 
             patientItem = qt.QTableWidgetItem(displayID)
-            classItem = qt.QTableWidgetItem(str(classLabel) if classLabel is not None else "")
+
+            className = ""
+            if classLabel is not None:
+                button = self.classButtons.get(classLabel)
+                defaultName = f"Class {classLabel}"
+                if button:
+                    actualName = button.text.strip()
+                    className = actualName if actualName != defaultName else str(classLabel)
+                else:
+                    className = str(classLabel)
+
+            classItem = qt.QTableWidgetItem(className if className else "")
 
             rowColor = classColors.get(classLabel, "white") if classLabel is not None else "white"
             patientItem.setBackground(qt.QColor(rowColor))
@@ -1107,19 +1170,17 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
             patientItem.setForeground(qt.QBrush(qt.QColor("black")))
             classItem.setForeground(qt.QBrush(qt.QColor("black")))
-                        
-            header = self.ui.classificationTable.horizontalHeader()
-            header.setStyleSheet("QHeaderView::section {  color: black;}")
 
-            
+            header = self.ui.classificationTable.horizontalHeader()
+            header.setStyleSheet("QHeaderView::section { color: black; }")
+
             vHeader = self.ui.classificationTable.verticalHeader()
             vHeader.setStyleSheet("QHeaderView::section { color: black; }")
 
             self.ui.classificationTable.setStyleSheet("QTableWidget { color: black; }")
 
-
             font = qt.QFont()
-            font.setBold(isCurrentPatient and not sceneIsEmpty)  
+            font.setBold(isCurrentPatient and not sceneIsEmpty)
             font.setWeight(qt.QFont.ExtraBold if isCurrentPatient and not sceneIsEmpty else qt.QFont.Normal)
 
             patientItem.setFont(font)
@@ -1134,12 +1195,13 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         if sceneIsEmpty:
             self.ui.classificationTable.clearSelection()
-            self.currentPatientID = ""  
+            self.currentPatientID = ""
 
         if self.blinkItem:
             self.blinkTimer.start(300)
         else:
             self.blinkTimer.stop()
+
 
     def clearTable(self):
         """Clears the classification table."""
@@ -1160,7 +1222,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.patientDropdown.clear()  
         self.ui.patientDropdown.addItem("-")
 
-        patients = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
+        patients, self.classNames = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
         classifiedPatients = {patientID: classLabel for patientID, classLabel in patients.items() if classLabel is not None and classLabel!="DUPLICATE"}
 
         if not classifiedPatients:
@@ -1249,7 +1311,7 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
         ]
 
         return files
-
+        
     def saveClassificationData(self, datasetPath: str, classificationData: dict, outputFolder: str):
         from ClassAnnotationLib.ClassAnnotationUtils import (
             movePatientIfReclassified,
@@ -1262,55 +1324,110 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
         os.makedirs(finalOutputFolder, exist_ok=True)
         csvFilePath = os.path.join(finalOutputFolder, "classification_results.csv")
 
+        widget = slicer.modules.classannotation.widgetRepresentation().self()
+
+        existingClassNames = {button.text.strip().replace(" ", "_").replace("/", "_") for button in widget.classButtons.values()}
+        for folder in os.listdir(finalOutputFolder):
+            folderPath = os.path.join(finalOutputFolder, folder)
+            if os.path.isdir(folderPath) and folder.startswith("class") and folder not in existingClassNames:
+                shutil.rmtree(folderPath)
+                    
         try:
-            existingPatients = self.loadExistingPatientsFromCSV(csvFilePath)
-            isHierarchical = self.isHierarchicalDataset(datasetPath)  
+            isHierarchical = self.isHierarchicalDataset(datasetPath)
+            patientToClassName = {}
+
+            previousClassMap = {}
+            if os.path.exists(csvFilePath):
+                with open(csvFilePath, newline='') as oldFile:
+                    reader = csv.DictReader(oldFile)
+                    for row in reader:
+                        pid = row.get("Patient ID", "").strip()
+                        classLabel = row.get("Class", "").strip()
+                        className = row.get("Class Name", "").strip()
+                        if pid:
+                            previousClassMap[pid] = (classLabel, className)
 
             with open(csvFilePath, mode='w', newline='') as file:
                 writer = csv.writer(file)
-                writer.writerow(["Patient ID", "Class", "Hash"])
+                writer.writerow(["Patient ID", "Class", "Class Name", "Hash"])
 
                 for patientID, classLabel in sorted(classificationData.items()):
                     hashString = ""
+                    className = ""
+
                     if classLabel is not None and classLabel != "DUPLICATE":
-                        try:
-                            originalFilePaths = findOriginalFile(datasetPath, patientID, isHierarchical)
-                            hashList = sorted(compute_patient_hashes(originalFilePaths))
-                            hashString = "|".join(hashList)
-                        except Exception as e:
-                            print(f"[WARNING] Failed to compute hash for {patientID}: {str(e)}")
+                        classButton = widget.classButtons.get(classLabel)
+                        defaultName = f"Class {classLabel}"
+                        if classButton:
+                            actualName = classButton.text.strip()
+                            className = actualName if actualName != defaultName else ""
+                        patientToClassName[patientID] = className
+
+                        originalFilePaths = findOriginalFile(datasetPath, patientID, isHierarchical)
+                        hashList = sorted(compute_patient_hashes(originalFilePaths))
+                        hashString = "|".join(hashList)
+
+                    else:
+                        patientToClassName[patientID] = None
 
                     writer.writerow([
                         patientID,
                         classLabel if classLabel is not None else "",
+                        className,
                         hashString
                     ])
 
             for patientID, classLabel in classificationData.items():
-                if classLabel is not None and classLabel != "DUPLICATE":
-                    classFolder = os.path.join(finalOutputFolder, f"class{classLabel}")
-                    os.makedirs(classFolder, exist_ok=True)
+                if classLabel is None or classLabel == "DUPLICATE":
+                    continue
 
-                    movePatientIfReclassified(finalOutputFolder, patientID, classLabel)
+                className = patientToClassName.get(patientID, "").strip()
+                classFolderName = className if className else f"class{classLabel}"
+                classFolderName = classFolderName.replace(" ", "_").replace("/", "_")
+                newClassFolder = os.path.join(finalOutputFolder, classFolderName)
+                os.makedirs(newClassFolder, exist_ok=True)
 
-                    patientFolder = os.path.join(classFolder, patientID)
-                    os.makedirs(patientFolder, exist_ok=True)
+                oldClassLabel, oldClassName = previousClassMap.get(patientID, (None, None))
+                if oldClassLabel is not None and oldClassLabel != str(classLabel):
+                    oldFolderName = oldClassName if oldClassName else f"class{oldClassLabel}"
+                    oldFolderName = oldFolderName.replace(" ", "_").replace("/", "_")
+                    oldPatientFolder = os.path.join(finalOutputFolder, oldFolderName, patientID)
+                    if os.path.exists(oldPatientFolder):
+                        shutil.rmtree(oldPatientFolder)
 
+                for folderName in os.listdir(finalOutputFolder):
+                    potentialPath = os.path.join(finalOutputFolder, folderName, patientID)
+                    if os.path.exists(potentialPath) and os.path.isdir(potentialPath):
+                        shutil.rmtree(potentialPath)
+
+                newPatientFolder = os.path.join(newClassFolder, patientID)
+                os.makedirs(newPatientFolder, exist_ok=True)
+                try:
                     originalFilePaths = findOriginalFile(datasetPath, patientID, isHierarchical)
                     for originalFilePath in originalFilePaths:
                         if originalFilePath:
                             fileName = os.path.basename(originalFilePath)
-                            destPath = os.path.join(patientFolder, fileName)
-                            shutil.copy2(originalFilePath, destPath)
+                            destPath = os.path.join(newPatientFolder, fileName)
+                            if not os.path.exists(destPath):
+                                shutil.copy2(originalFilePath, destPath)
+                except Exception as copy_error:
+                    print(f"[WARNING] Failed to copy files for {patientID}: {copy_error}")
 
-            widget = slicer.modules.classannotation.widgetRepresentation().self()
+                
             if hasattr(widget, 'patientHashesFromCSV'):
                 widget.patientHashesFromCSV = self.loadHashesFromCSV(datasetPath, outputFolder)
 
+            for classFolder in os.listdir(finalOutputFolder):
+                fullClassPath = os.path.join(finalOutputFolder, classFolder)
+                if os.path.isdir(fullClassPath):
+                    subitems = [item for item in os.listdir(fullClassPath) if not item.startswith('.')]
+                    if len(subitems) == 0:
+                        shutil.rmtree(fullClassPath)
+                       
         except Exception as e:
             slicer.util.errorDisplay(f"❌ Error saving CSV: {str(e)}", windowTitle="Error")
 
-            
+
     def getPatientFilesForReview(self, datasetPath: str, patientID: str, isHierarchical: bool) -> List[str]:
         """Finds images for a previously classified patient."""
         patientFiles = []
@@ -1326,24 +1443,27 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
 
         return patientFiles
 
-    def loadExistingCSV(self, datasetPath: str, outputPath: str) -> dict:
-        """Upload the data of the patients classified by the correct CSV according to the mode."""
-        
-        mode = getattr(self, "mode", STANDARD_MODE)  
-        
+    def loadExistingCSV(self, datasetPath: str, outputPath: str) -> Tuple[dict, dict]:
+        """Upload the data of the patients classified by the correct CSV according to the mode.
+        Also retrieves class names from the CSV if available.
+        """
+
+        mode = getattr(self, "mode", STANDARD_MODE)
+
         if mode == "standard":
             csvFilePath = os.path.join(datasetPath, OUTPUT_FOLDER, "classification_results.csv")
-        else:  
+        else:
             csvFilePath = os.path.join(outputPath, OUTPUT_FOLDER, "classification_results.csv")
 
         classifiedPatients = {}
+        classNames = {}
 
         if os.path.exists(csvFilePath):
             try:
                 with open(csvFilePath, mode='r') as file:
                     reader = csv.reader(file)
-                    next(reader)  # skip header
-                    
+                    header = next(reader, None)  # skip header
+
                     for row in reader:
                         if len(row) >= 2:
                             patientID = row[0].strip()
@@ -1351,12 +1471,17 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
 
                             if rawLabel.isdigit():
                                 classLabel = int(rawLabel)
-                            elif rawLabel == "DUPLICATE":
-                                classLabel = "DUPLICATE"
-                            else:
-                                classLabel = None
+                                classifiedPatients[patientID] = classLabel
 
-                            classifiedPatients[patientID] = classLabel
+                                if len(row) >= 3:
+                                    className = row[2].strip()
+                                    if className:
+                                        classNames[classLabel] = className
+
+                            elif rawLabel == "DUPLICATE":
+                                classifiedPatients[patientID] = "DUPLICATE"
+                            else:
+                                classifiedPatients[patientID] = None
 
             except Exception as e:
                 slicer.util.errorDisplay(f"❌ Error while reading CSV: {str(e)}", windowTitle="Error")
@@ -1367,7 +1492,7 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
             if patientID not in classifiedPatients:
                 classifiedPatients[patientID] = None
 
-        return classifiedPatients
+        return classifiedPatients, classNames
 
 
     def countPatientsPerClassFromCSV(self, datasetPath: str, outputPath: str) -> dict:
@@ -1415,6 +1540,8 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
                 patientIDs.add(patientID)
         
         return sorted(patientIDs)
+    
+
 
     def loadHashesFromCSV(self, datasetPath: str, outputPath: str) -> Dict[str, str]:
         import csv
