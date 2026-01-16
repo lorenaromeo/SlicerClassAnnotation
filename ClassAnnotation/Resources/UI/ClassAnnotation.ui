@@ -9,8 +9,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>768</width>
-    <height>600</height>
+    <width>792</width>
+    <height>982</height>
    </rect>
   </property>
   <property name="sizePolicy">
@@ -30,8 +30,8 @@
        <rect>
         <x>0</x>
         <y>0</y>
-        <width>727</width>
-        <height>853</height>
+        <width>766</width>
+        <height>956</height>
        </rect>
       </property>
       <layout class="QVBoxLayout" name="scrollLayout">
@@ -297,9 +297,41 @@
           </sizepolicy>
          </property>
          <property name="text" stdset="0">
-          <string>Review</string>
+          <string>Review/Inspection</string>
          </property>
          <layout class="QVBoxLayout" name="reviewLayout">
+          <item>
+           <widget class="QGroupBox" name="manualReviewGroupBox">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="title">
+             <string>Manual Review</string>
+            </property>
+            <layout class="QGridLayout" name="manualReviewLayout">
+             <item row="0" column="1">
+              <widget class="QComboBox" name="patientDropdown"/>
+             </item>
+             <item row="1" column="0" colspan="2">
+              <widget class="QPushButton" name="reviewButton">
+               <property name="text">
+                <string>Review</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="0">
+              <widget class="QLabel" name="label_selectPatient">
+               <property name="text">
+                <string>Select a patient to review</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </item>
           <item>
            <widget class="QGroupBox" name="automaticReviewGroupBox">
             <property name="sizePolicy">
@@ -309,7 +341,7 @@
              </sizepolicy>
             </property>
             <property name="title">
-             <string>Automatic Review</string>
+             <string>Automated Final Inspection</string>
             </property>
             <layout class="QGridLayout" name="gridLayout">
              <item row="1" column="0">
@@ -333,38 +365,6 @@
               <widget class="QPushButton" name="nextPatientButton">
                <property name="text">
                 <string>Next Random Patient</string>
-               </property>
-              </widget>
-             </item>
-            </layout>
-           </widget>
-          </item>
-          <item>
-           <widget class="QGroupBox" name="manualReviewGroupBox">
-            <property name="sizePolicy">
-             <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
-              <horstretch>0</horstretch>
-              <verstretch>0</verstretch>
-             </sizepolicy>
-            </property>
-            <property name="title">
-             <string>Manual Review</string>
-            </property>
-            <layout class="QGridLayout" name="manualReviewLayout">
-             <item row="0" column="0">
-              <widget class="QLabel" name="label_selectPatient">
-               <property name="text">
-                <string>Select a patient to review</string>
-               </property>
-              </widget>
-             </item>
-             <item row="0" column="1">
-              <widget class="QComboBox" name="patientDropdown"/>
-             </item>
-             <item row="1" column="0" colspan="2">
-              <widget class="QPushButton" name="reviewButton">
-               <property name="text">
-                <string>Review</string>
                </property>
               </widget>
              </item>
