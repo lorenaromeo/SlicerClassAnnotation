@@ -11,8 +11,10 @@ from slicer.util import VTKObservationMixin
 from typing import List, Dict
 
 
-SUPPORTED_FORMATS = [".nrrd", ".nii", ".nii.gz", ".dcm", ".DCM", ".mha"]
-
+SUPPORTED_FORMATS = (
+    ".nrrd", ".nii", ".nii.gz", ".dcm", ".DCM", ".mha",
+    ".jpg", ".jpeg", ".png", ".tif", ".tiff",
+)
 STANDARD_MODE = "standard"
 ADVANCED_MODE = "advanced"
 OUTPUT_FOLDER = "output"
@@ -1266,20 +1268,18 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.tryLoadPatient(patientID, patientFiles)
         self.disableAllButtons(False)
 
-
-
 class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
     """Module logic for image classification."""
 
     def isFlatDataset(self, datasetPath: str) -> bool:
         """Checks if the dataset is flat (all files are in the main folder)."""
         files = [f for f in os.listdir(datasetPath) if os.path.isfile(os.path.join(datasetPath, f)) and not f.startswith('.') and f != 'classification_results.csv']
-        return any(f.endswith(tuple(SUPPORTED_FORMATS)) for f in files)
+        return any(f.lower().endswith(tuple(SUPPORTED_FORMATS)) for f in files)
 
     def isHierarchicalDataset(self, datasetPath: str) -> bool:
         """Checks if the dataset is hierarchical (each patient has a folder)."""
         subdirs = [d for d in os.listdir(datasetPath) if os.path.isdir(os.path.join(datasetPath, d))]
-        return any(any(f.endswith(tuple(SUPPORTED_FORMATS)) for f in os.listdir(os.path.join(datasetPath, d))) for d in subdirs)
+        return any(any(f.lower().endswith(tuple(SUPPORTED_FORMATS)) for f in os.listdir(os.path.join(datasetPath, d))) for d in subdirs)
 
     def loadExistingPatientsFromCSV(self, csvFilePath: str) -> dict:
         existingPatients = {}
@@ -1307,7 +1307,7 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
         files = [
             os.path.join(patientPath, f)
             for f in os.listdir(patientPath)
-            if f.endswith(tuple(SUPPORTED_FORMATS))
+            if f.lower().endswith(tuple(SUPPORTED_FORMATS))
         ]
 
         return files
@@ -1430,18 +1430,29 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
 
     def getPatientFilesForReview(self, datasetPath: str, patientID: str, isHierarchical: bool) -> List[str]:
         """Finds images for a previously classified patient."""
+        from ClassAnnotationLib.ClassAnnotationUtils import extract_patient_id_from_name   
         patientFiles = []
 
         if isHierarchical:
             patientPath = os.path.join(datasetPath, patientID)
             if os.path.exists(patientPath):
-                patientFiles = [os.path.join(patientPath, f) for f in os.listdir(patientPath) if f.endswith(tuple(SUPPORTED_FORMATS))]
+                patientFiles = [os.path.join(patientPath, f) for f in os.listdir(patientPath) if f.lower().endswith(tuple(SUPPORTED_FORMATS))]
         else:
+            # for file in os.listdir(datasetPath):
+            #     if file.startswith(patientID) and file.lower().endswith(tuple(SUPPORTED_FORMATS)):
+            #         patientFiles.append(os.path.join(datasetPath, file))
             for file in os.listdir(datasetPath):
-                if file.startswith(patientID) and file.endswith(tuple(SUPPORTED_FORMATS)):
-                    patientFiles.append(os.path.join(datasetPath, file))
+                if not file.lower().endswith(tuple(SUPPORTED_FORMATS)):
+                    continue
+
+                fullPath = os.path.join(datasetPath, file)
+                filePatientID = extract_patient_id_from_name(file)
+
+                if filePatientID == patientID:
+                    patientFiles.append(fullPath)
 
         return patientFiles
+
 
     def loadExistingCSV(self, datasetPath: str, outputPath: str) -> Tuple[dict, dict]:
         """Upload the data of the patients classified by the correct CSV according to the mode.
@@ -1523,9 +1534,21 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
             slicer.util.errorDisplay(f"❌ Error while reading CSV {str(e)}", windowTitle="Error")
 
         return classCounts
+
+
+
+
+
+
+
+
+
+    
         
     def getAllPatientIDs(self, datasetPath: str) -> List[str]:
         """Retrieves all patient IDs in the dataset, including unclassified ones."""
+        from ClassAnnotationLib.ClassAnnotationUtils import extract_patient_id_from_name  
+    
         patientIDs = set()
 
         if self.isHierarchicalDataset(datasetPath):
@@ -1533,10 +1556,18 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
                         and d.lower() != OUTPUT_FOLDER and not d.startswith('.')}
 
         elif self.isFlatDataset(datasetPath):
-            allFiles = [f for f in os.listdir(datasetPath) if os.path.isfile(os.path.join(datasetPath, f)) 
-                        and f.lower() != OUTPUT_FOLDER and not f.startswith('.') and f != 'classification_results.csv']
+            #allFiles = [f for f in os.listdir(datasetPath) if os.path.isfile(os.path.join(datasetPath, f)) 
+                        #and f.lower() != OUTPUT_FOLDER and not f.startswith('.') and f != 'classification_results.csv']
+            allFiles = [
+                f for f in os.listdir(datasetPath)
+                if os.path.isfile(os.path.join(datasetPath, f))
+                and not f.startswith('.')
+                and f != 'classification_results.csv'
+                and f.lower().endswith(SUPPORTED_FORMATS)
+            ]
             for fileName in allFiles:
-                patientID = fileName.split("_")[0]  
+                patientID = extract_patient_id_from_name(fileName)
+                # patientID = fileName.split("_")[0]  
                 patientIDs.add(patientID)
         
         return sorted(patientIDs)
