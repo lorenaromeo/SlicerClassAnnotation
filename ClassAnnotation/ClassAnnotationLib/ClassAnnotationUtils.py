@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 from typing import List, Set
 
@@ -92,3 +93,34 @@ def compute_patient_hashes(fileList):
 
     combinedHash = hashlib.sha256("".join(hashList).encode()).hexdigest()
     return [combinedHash]
+
+
+def remove_supported_extension(fname: str) -> str:
+    """
+    Rimuove l'estensione dal nome file, gestendo anche .nii.gz.
+    Restituisce il nome senza estensione.
+    """
+    lower = fname.lower()
+    if lower.endswith(".nii.gz"):
+        return fname[:-7]  # len(".nii.gz") = 7
+    root, _ = os.path.splitext(fname)
+    return root
+
+
+def extract_patient_id_from_name(fname: str) -> str:
+    """
+    Extracts the patient ID from filenames of the form:
+    <patientID>-<modality>.ext  or  <patientID>_<modality>.ext
+
+    - The separator is either '-' or '_'.
+    - Both patientID and modality may contain alphanumeric characters.
+    - The patient ID is always the substring preceding the first separator.
+    """
+    base = os.path.basename(fname)
+    stem = remove_supported_extension(base)
+
+    # Split on the first '-' or '_' only
+    parts = re.split(r"[-_]", stem, maxsplit=1)
+
+    # The first token is always the patient ID
+    return parts[0] if parts else stem
