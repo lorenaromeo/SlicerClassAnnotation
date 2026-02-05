@@ -4,6 +4,7 @@ import shutil
 import SimpleITK as sitk
 import sitkUtils
 import qt
+import json
 import slicer
 from typing import Tuple
 from slicer.ScriptedLoadableModule import *
@@ -46,7 +47,8 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.currentPatientIndex = 0
         self.classificationData = {}
         self.singleClassification = {}   
-        self.multiClassification  = {}   
+        self.multiClassification  = {} 
+        self.multiClassNames = {}   
         self.featureMeta = {}
         self.datasetPath = ""
         self.outputPath = None
@@ -280,7 +282,10 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 for i in range(num_classes):
                     btn = qt.QPushButton(str(i))
                     btn.setFixedSize(40, 30) 
-                    btn.setCheckable(True)   
+                    btn.setCheckable(True)
+                    labelMap = self.multiClassNames.get(feature_name, {})
+                    txt = labelMap.get(str(i), str(i))  
+                    btn = qt.QPushButton(txt)   
                     
                     btn.setStyleSheet(f"""
                         QPushButton {{
@@ -303,6 +308,36 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                     
                     self.multiLabelButtons[feature_name][i] = btn
                     row_layout.addWidget(btn)
+                    
+                iconPath = self.resourcePath("Icons/pencil.png")
+
+                pencil = qt.QToolButton()
+                pencil.setIcon(qt.QIcon(iconPath))
+                pencil.setIconSize(qt.QSize(18, 18))
+
+                pencil.setFixedSize(24, 24)
+                pencil.setAutoRaise(True)                 # 🔑 niente bordo
+                pencil.setToolButtonStyle(qt.Qt.ToolButtonIconOnly)
+                pencil.setFocusPolicy(qt.Qt.NoFocus)
+
+                pencil.setStyleSheet("""
+                    QToolButton {
+                        border: none;
+                        padding: 0px;
+                    }
+                    QToolButton:hover {
+                        background-color: rgba(0,0,0,20);
+                        border-radius: 4px;
+                    }
+                """)
+
+                pencil.setToolTip("Rename labels")
+                pencil.clicked.connect(
+                    lambda _=None, f=feature_name: self.renameMultiFeatureLabels(f)
+                )
+
+                row_layout.addWidget(pencil)
+                row_layout.setAlignment(pencil, qt.Qt.AlignVCenter)
 
                 row_layout.addStretch()
                 
@@ -376,6 +411,27 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             f"Feature '{feature}' deleted.",
             windowTitle="Deleted"
         )
+
+    def renameMultiFeatureLabels(self, feature_name: str):
+        if not hasattr(self, "multiLabelButtons") or feature_name not in self.multiLabelButtons:
+            return
+
+        btns = self.multiLabelButtons[feature_name] 
+
+        for val, btn in btns.items():
+            current = btn.text if callable(btn.text) else btn.text()
+            newName, ok = qt.QInputDialog.getText(
+                slicer.util.mainWindow(),
+                f"Rename labels – {feature_name}",
+                f"New name for class {val}:",
+                qt.QLineEdit.Normal,
+                current
+            )
+            if ok and newName.strip():
+                btn.setText(newName.strip())
+                self.multiClassNames.setdefault(feature_name, {})[str(val)] = newName.strip()
+
+        self.logic.saveMultiLabels(self.datasetPath, self.outputPath, self.multiClassNames)
 
     def setLabelModeFromButtons(self, label_mode: str):
         if not hasattr(self.ui, "SingleTab"):
@@ -1054,6 +1110,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             return
 
         self.reloadStateFromCSVs()
+        self.multiClassNames = self.logic.loadMultiLabels(self.datasetPath, self.outputPath)
 
         self.classCounters = self.logic.countPatientsPerClassFromCSV(self.datasetPath, self.outputPath)
 
@@ -2725,3 +2782,22 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
             print(f"[ERROR] Failed to read CSV: {str(e)}")
 
         return patientHashes
+
+
+    def _multiLabelsJsonPath(self, datasetPath, outputPath):
+        return os.path.join(self._baseOutputDir(datasetPath, outputPath), "multi_labels.json")
+    
+
+    def loadMultiLabels(self, datasetPath, outputPath):
+        p = self._multiLabelsJsonPath(datasetPath, outputPath)
+        if not os.path.exists(p):
+            return {}
+        with open(p, "r") as f:
+            return json.load(f)  # dict
+
+    def saveMultiLabels(self, datasetPath, outputPath, labelsDict):
+        outDir = self._baseOutputDir(datasetPath, outputPath)
+        os.makedirs(outDir, exist_ok=True)
+        p = self._multiLabelsJsonPath(datasetPath, outputPath)
+        with open(p, "w") as f:
+            json.dump(labelsDict, f, indent=2)
