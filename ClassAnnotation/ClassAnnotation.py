@@ -4,12 +4,26 @@ import shutil
 import SimpleITK as sitk
 import sitkUtils
 import qt
+import json
 import slicer
 from typing import Tuple
 from slicer.ScriptedLoadableModule import *
 from slicer.util import VTKObservationMixin
 from typing import List, Dict
+import os, re, shutil, sys
 
+MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+LIB_DIR = os.path.join(MODULE_DIR, "ClassAnnotationLib")
+
+print("MODULE_DIR =", MODULE_DIR)
+print("LIB_DIR =", LIB_DIR)
+print("LIB exists =", os.path.isdir(LIB_DIR))
+print("UIUtils exists =", os.path.isfile(os.path.join(LIB_DIR, "ClassAnnotationUIUtils.py")))
+
+if LIB_DIR not in sys.path:
+    sys.path.insert(0, LIB_DIR)
+
+print("sys.path[0:5] =", sys.path[:5])
 
 SUPPORTED_FORMATS = (
     ".nrrd", ".nii", ".nii.gz", ".dcm", ".DCM", ".mha",
@@ -17,6 +31,8 @@ SUPPORTED_FORMATS = (
 )
 STANDARD_MODE = "standard"
 ADVANCED_MODE = "advanced"
+SINGLE_LABEL = "single"
+MULTI_LABEL = "multi"
 OUTPUT_FOLDER = "output"
 
 class ClassAnnotation(ScriptedLoadableModule):
@@ -42,6 +58,10 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.loadedPatients = []
         self.currentPatientIndex = 0
         self.classificationData = {}
+        self.singleClassification = {}   
+        self.multiClassification  = {} 
+        self.multiClassNames = {}   
+        self.featureMeta = {}
         self.datasetPath = ""
         self.outputPath = None
         self.isHierarchical = False
@@ -75,10 +95,36 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         uiWidget = slicer.util.loadUI(uiPath)
         self.layout.addWidget(uiWidget)
         self.ui = slicer.util.childWidgetVariables(uiWidget)
+        print([n for n in dir(self.ui) if "Feature" in n or "Select" in n])
+        self.uiWidget = uiWidget
+        self.selectFeatureLabel = getattr(self.ui, "SelectFeature", None)
+        if self.selectFeatureLabel is None:
+            self.selectFeatureLabel = self.uiWidget.findChild(qt.QWidget, "SelectFeature")
 
         self.classButtons = {}
         self.classLCDs = {}
         self.classCounters = {}
+
+        if hasattr(self.ui, "singleButton") and hasattr(self.ui, "multiButton") and hasattr(self.ui, "SingleTab"):
+            self.classButtons = {} 
+            self.ui.singleButton.setCheckable(True)
+            self.ui.multiButton.setCheckable(True)
+
+            self.ui.singleButton.clicked.connect(
+                lambda: self.setLabelModeFromButtons(SINGLE_LABEL)
+            )
+            self.ui.multiButton.clicked.connect(
+                lambda: self.setLabelModeFromButtons(MULTI_LABEL)
+            )
+
+            self.ui.SingleTab.currentChanged.connect(self.onSingleTabChanged)
+
+            self.logic.label_mode = SINGLE_LABEL  
+            if self.selectFeatureLabel:
+                self.selectFeatureLabel.setVisible(False)
+            self.updateSingleMultiButtonsStyle()
+            self.syncModeUI()
+            # self.applyLabelModeUI()
 
         self.ui.loadButton.clicked.connect(lambda: self.setModeAndLoad("standard"))
         self.ui.loadButton_advanced.clicked.connect(lambda: self.setModeAndLoad(ADVANCED_MODE))
@@ -90,7 +136,9 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.renameButton.clicked.connect(self.renameClassButtons)
 
         self.ui.casesInput.setText("5")  
-        self.ui.casesInput.setPlaceholderText("")  
+        self.ui.casesInput.setPlaceholderText("")
+
+        self.ui.featureReviewDropdown.setVisible(self.logic.label_mode == MULTI_LABEL) 
    
         self.ui.classificationTable.setColumnCount(2)
         self.ui.classificationTable.setHorizontalHeaderLabels(["Patient ID", "Class"])
@@ -98,93 +146,990 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.classificationTable.horizontalHeader().setSectionResizeMode(qt.QHeaderView.Stretch)
         self.ui.classificationTable.itemSelectionChanged.connect(self.onPatientSelected)
 
+        self.ui.addRowButton.clicked.connect(self.addRow)
+
+        self.ui.generateMultiButton.clicked.connect(self.generateMultiLabelClassButtons)
+
         self.ui.classCountInput.valueChanged.connect(self.onClassCountChanged)
+
+        self.ui.DeleteRow.clicked.connect(self.onDeleteFeatureClicked)
 
         self.disableAllButtons(True)
         self.updateButtonStates()
 
-    def generateClassButtons(self):
-        from ClassAnnotationLib.ClassAnnotationUIUtils import getMainColor, getDarkerColor, getLighterColor
-        """Remove all existing elements and regenerate the classification buttons and counters with updated data."""
+    def getActiveClassificationDict(self):
+        return self.singleClassification if self.logic.label_mode == SINGLE_LABEL else self.multiClassification
+    
+    def generateNewFeatureID(self) -> str:
+        if not self.featureMeta:
+            return "F001"
+        nums = [int(fid[1:]) for fid in self.featureMeta.keys()]
+        return f"F{max(nums)+1:03d}"
 
-        numClasses = self.ui.classCountInput.value  
+    def addRow(self):
+            """Adds a row to the MultiLabel table with a default name and a spinbox for class count."""
+            table = self.ui.MultiLabeltable
+            row = table.rowCount() if callable(table.rowCount) else table.rowCount
+            table.insertRow(row)
 
-        classificationLayout = self.ui.classificationGroupBox.layout()
+            default_name = f"Feature {row + 1}"
+            name_item = qt.QTableWidgetItem(default_name)
+            table.setItem(row, 0, name_item)
 
-        if classificationLayout is None:
-            slicer.util.errorDisplay("❌ Error: Missing layout in classificationGroupBox!", windowTitle="Error")
+            spin_box = qt.QSpinBox()
+            spin_box.setMinimum(2)  
+            spin_box.setMaximum(10) 
+            spin_box.setValue(2)    
+
+            spin_box.setAlignment(qt.Qt.AlignCenter)
+            spin_box.setStyleSheet("background-color: white; color: black;")
+
+            table.setCellWidget(row, 1, spin_box)
+            spin_box.valueChanged.connect(lambda _=None, r=row: self.onFeatureCountChanged(r))
+            self.populateDeleteFeatureDropdown()
+
+
+    def onFeatureCountChanged(self, row: int):
+        table = self.ui.MultiLabeltable
+        item = table.item(row, 0)
+        if not item:
             return
 
+        feature_name = item.text().strip()
+        if not feature_name:
+            return
+
+        spin = table.cellWidget(row, 1)
+        if not spin:
+            return
+
+        min_required = self.getMinClassesForFeature(feature_name)
+
+        current = spin.value if not callable(spin.value) else spin.value()
+        if current < min_required:
+            slicer.util.warningDisplay(
+                f"⚠️ '{feature_name}': Number of classes cannot be lower than {min_required} "
+                f"because at least one patient has value {min_required-1}.",
+                windowTitle="Invalid Feature Class Count"
+            )
+            spin.blockSignals(True)
+            spin.setValue(min_required)
+            spin.blockSignals(False)
+
+        self.populateDeleteFeatureDropdown()
+
+
+    def configureClassificationTableForMultiLabel(self):
+        feature_names = self.getGeneratedFeatureNames()
+
+        headers = ["Patient ID"] + feature_names
+
+        t = self.ui.classificationTable
+        t.clear()
+        t.setColumnCount(len(headers))
+        t.setHorizontalHeaderLabels(headers)
+        t.horizontalHeader().setStretchLastSection(True)
+        t.horizontalHeader().setSectionResizeMode(qt.QHeaderView.Stretch)
+
+        t.setEditTriggers(qt.QAbstractItemView.NoEditTriggers)
+
+
+    def configureClassificationTableForSingleLabel(self):
+        t = self.ui.classificationTable
+        t.clear()
+        t.setColumnCount(2)
+        t.setHorizontalHeaderLabels(["Patient ID", "Class"])
+        t.horizontalHeader().setStretchLastSection(True)
+        t.horizontalHeader().setSectionResizeMode(qt.QHeaderView.Stretch)
+
+        t.setEditTriggers(qt.QAbstractItemView.AllEditTriggers)
+        t.setSelectionMode(qt.QAbstractItemView.SingleSelection)
+
+    def generateMultiLabelClassButtons(self):
+        """Generates the classification UI based on the MultiLabel table configuration."""
+        from ClassAnnotationLib.ClassAnnotationUIUtils import getMainColor
+
+        if not self.datasetPath:
+            return
+
+        self.reloadStateFromCSVs()
+        self.multiClassNames = self.logic.loadMultiLabels(self.datasetPath, self.outputPath)
+
+        if hasattr(self, "migrateRenamedFeaturesBeforeGenerate"):
+            self.migrateRenamedFeaturesBeforeGenerate()
+
+        self.reloadStateFromCSVs()
+        self.multiClassNames = self.logic.loadMultiLabels(self.datasetPath, self.outputPath)
+
+        table = self.ui.MultiLabeltable
+        names = []
+        for r in range(table.rowCount):
+            it = table.item(r, 0)
+            if it and it.text().strip():
+                names.append(it.text().strip())
+
+        dups = [n for n in set(names) if names.count(n) > 1]
+        if dups:
+            slicer.util.errorDisplay(
+                "❌ Features with the same name (collision).\n"
+                f"Duplicati: {', '.join(sorted(dups))}\n"
+                "Rinominale con nomi univoci (anche spazi finali contano).",
+                windowTitle="Duplicate Feature Names"
+            )
+            return
+        
+        if not isinstance(self.multiClassNames, dict):
+            self.multiClassNames = {}
+
+        current_features = set(names)  
+        self.multiClassNames = {k: v for k, v in self.multiClassNames.items() if k in current_features}
+
+        if table.rowCount == 0:
+            slicer.util.warningDisplay(
+                "Please add at least one feature row before generating.",
+                windowTitle="Empty Table"
+            )
+            return
+
+        classificationLayout = self.ui.classificationGroupBox.layout()
+        if classificationLayout is None:
+            classificationLayout = qt.QVBoxLayout()
+            self.ui.classificationGroupBox.setLayout(classificationLayout)
+
+        # --- clear previous UI ---
         def clearLayout(layout):
             while layout.count():
                 item = layout.takeAt(0)
-                widget = item.widget()
-                childLayout = item.layout()
-
-                if widget:
-                    widget.setParent(None)
-                    widget.deleteLater()
-                elif childLayout:
-                    clearLayout(childLayout)
-                    childLayout.setParent(None)
+                w = item.widget()
+                l = item.layout()
+                if w:
+                    w.setParent(None)
+                    w.deleteLater()
+                elif l:
+                    clearLayout(l)
+                    l.setParent(None)
 
         clearLayout(classificationLayout)
 
         self.classButtons.clear()
-        self.classLCDs.clear()
+        self.populateDeleteFeatureDropdown()
+        self.multiLabelButtons = {}
 
-        self.classCounters = self.logic.countPatientsPerClassFromCSV(self.datasetPath, self.outputPath)
+        for row in range(table.rowCount):
+            item_name = table.item(row, 0)
+            if not item_name or not item_name.text().strip():
+                continue
 
-        gridLayout = qt.QGridLayout()
-        gridLayout.setSpacing(5)
-        gridLayout.setContentsMargins(10, 10, 10, 10)
+            feature_name = item_name.text().strip()
 
-        headerLabel = qt.QLabel("Current Cases per Class")
-        headerLabel.setAlignment(qt.Qt.AlignCenter)
-        headerLabel.setStyleSheet("font-size: 12px; font-weight: bold; padding-bottom: 5px;")
-        gridLayout.addWidget(headerLabel, 0, 1)  
+            spin_widget = table.cellWidget(row, 1)
+            num_from_spin = self._qt_get_value(spin_widget, default=2)
 
-        _, classNamesFromCSV = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
+            labelMap = self.multiClassNames.get(feature_name, {})
+            if not isinstance(labelMap, dict):
+                labelMap = {}
 
-        for classLabel in range(numClasses):
-            row = classLabel + 1  
-            defaultName = f"Class {classLabel}"
-            customName = classNamesFromCSV.get(classLabel, defaultName)
-            button = qt.QPushButton(customName)
+            min_required = self.getMinClassesForFeature(feature_name)
 
-            # button = qt.QPushButton(f"Class {classLabel}")
-            button.setStyleSheet(f"""
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
-                            stop:0 {getLighterColor(classLabel)}, 
-                            stop:0.5 {getMainColor(classLabel)}, 
-                            stop:1 {getDarkerColor(classLabel)});
-                color: black;
-                font-weight: bold;
-                font-size: 14px;
-                padding: 6px;
-                border-radius: 6px;
-                border: 1px solid #555;
-                box-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
-            """)
-            button.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Fixed)
-            button.setMinimumHeight(30)
-            button.clicked.connect(lambda _, lbl=classLabel: self.onClassifyImage(lbl))
-            self.classButtons[classLabel] = button
+            num_from_json = max(2, len(labelMap))
 
-            lcdCounter = qt.QLCDNumber()
-            lcdCounter.setDigitCount(2)
-            lcdCounter.display(self.classCounters.get(classLabel, 0))  
-            lcdCounter.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Fixed)
-            lcdCounter.setMinimumHeight(30)
-            self.classLCDs[classLabel] = lcdCounter
+            num_classes = max(num_from_spin, min_required, num_from_json)
 
-            gridLayout.addWidget(button, row, 0)
-            gridLayout.addWidget(lcdCounter, row, 1)
+            if feature_name not in self.multiClassNames or not isinstance(self.multiClassNames.get(feature_name), dict):
+                self.multiClassNames[feature_name] = {}
 
-        classificationLayout.addLayout(gridLayout)
+            for i in range(num_classes):
+                if str(i) not in self.multiClassNames[feature_name]:
+                    self.multiClassNames[feature_name][str(i)] = str(i)
 
-        self.ui.classificationGroupBox.setLayout(classificationLayout)
-        self.ui.classificationGroupBox.update()
+            if spin_widget and num_from_spin != num_classes:
+                try:
+                    spin_widget.blockSignals(True)
+                    spin_widget.setValue(num_classes)
+                    spin_widget.blockSignals(False)
+                except Exception:
+                    pass
+
+            row_frame = qt.QFrame()
+            row_frame.setStyleSheet("QFrame { background: transparent; }")
+
+            row_layout = qt.QHBoxLayout(row_frame)
+            row_layout.setContentsMargins(6, 4, 6, 4)
+            row_layout.setSpacing(10)
+
+            # --- Feature label (fixed column) ---
+            label = qt.QLabel(f"{feature_name}:")
+            label.setStyleSheet("font-weight: bold; font-size: 13px;")
+            label.setFixedWidth(150)
+            label.setAlignment(qt.Qt.AlignLeft | qt.Qt.AlignVCenter)
+            row_layout.addWidget(label, 0)
+
+            # --- Buttons area (expanding middle column) ---
+            buttonsLayout = qt.QHBoxLayout()
+            buttonsLayout.setContentsMargins(0, 0, 0, 0)
+            buttonsLayout.setSpacing(8)
+
+            buttonsWidget = qt.QWidget()
+            buttonsWidget.setLayout(buttonsLayout)
+            buttonsWidget.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Fixed)
+
+            self.multiLabelButtons[feature_name] = {}
+
+            # --- calcola larghezza bottoni usando i testi REALI ---
+            longest_txt = ""
+            for i in range(num_classes):
+                txt = labelMap.get(str(i), str(i))
+                if len(txt) > len(longest_txt):
+                    longest_txt = txt
+
+            fm = qt.QFontMetrics(qt.QApplication.font())
+            target_w = max(40, fm.horizontalAdvance(longest_txt) + 22)
+            target_h = 30
+
+            for i in range(num_classes):
+                txt = labelMap.get(str(i), str(i))
+
+                btn = qt.QPushButton(txt)
+                btn.setCheckable(True)
+                btn.setMinimumWidth(target_w)
+                btn.setFixedHeight(target_h)
+                btn.setSizePolicy(qt.QSizePolicy.Fixed, qt.QSizePolicy.Fixed)
+
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: #f0f0f0;
+                        border: 1px solid #999;
+                        border-radius: 6px;
+                        font-weight: 600;
+                        padding: 4px 10px;
+                    }}
+                    QPushButton:checked {{
+                        background-color: {getMainColor(i)};
+                        color: white;
+                        border: 1px solid #333;
+                    }}
+                    QPushButton:hover {{
+                        background-color: #e7e7e7;
+                    }}
+                """)
+
+                btn.clicked.connect(lambda checked, f=feature_name, val=i: self.onMultiLabelClick(f, val))
+
+                self.multiLabelButtons[feature_name][i] = btn
+                buttonsLayout.addWidget(btn)
+
+            row_layout.addWidget(buttonsWidget, 1)
+
+            # --- Pencil button (fixed right column) ---
+            pencil = qt.QToolButton()
+            pencil.setIcon(qt.QIcon(self.resourcePath("Icons/pensil.png")))
+            pencil.setIconSize(qt.QSize(16, 16))
+            pencil.setFixedSize(28, 28)
+            pencil.setToolTip("Rename labels")
+            pencil.setAutoRaise(True)
+            pencil.clicked.connect(lambda _=None, f=feature_name: self.renameMultiFeatureLabels(f))
+
+            row_layout.addWidget(pencil, 0, qt.Qt.AlignVCenter)
+
+            classificationLayout.addWidget(row_frame)
+
+            line = qt.QFrame()
+            line.setFrameShape(qt.QFrame.HLine)
+            line.setFrameShadow(qt.QFrame.Sunken)
+            classificationLayout.addWidget(line)
+
+        self.logic.label_mode = MULTI_LABEL
+
+        self.configureClassificationTableForMultiLabel()
+        self.logic.saveMultiLabels(self.datasetPath, self.outputPath, self.multiClassNames, overwrite=True)
+
+        feature_names = self.getGeneratedFeatureNames()
+        self.logic.saveMultiCSV(self.datasetPath, self.outputPath, self.multiClassification, feature_names)
+
+        self.reloadStateFromCSVs()
+
+        self.updateTable()
+        self.populatePatientDropdown()
+        self.populateFeatureReviewDropdown()
+
+        classificationLayout.addStretch(1)
+
+        slicer.mrmlScene.Clear(0)
+        slicer.app.processEvents()
+        self.currentPatientID = ""
+        self.loadedPatients = []
+
+        self.loadNextPatient()
+        self.updateTable()
+        self.populatePatientDropdown()
+        self.updateButtonStates()
+
+    def onDeleteFeatureClicked(self):
+        if self.logic.label_mode != MULTI_LABEL:
+            slicer.util.warningDisplay(
+                "Delete Feature is available only in Multi-label mode.",
+                windowTitle="Wrong mode"
+            )
+            return
+
+        feature = self.ui.DeleteFeatureDropdown.currentText
+        if not feature or feature == "-":
+            slicer.util.warningDisplay(
+                "Select a feature to delete.",
+                windowTitle="No selection"
+            )
+            return
+
+        if self.logic.isMultiFeatureUsed(self.datasetPath, self.outputPath, feature):
+            slicer.util.warningDisplay(
+                f"⚠️ Cannot delete '{feature}': at least one patient already has a value.",
+                windowTitle="Feature in use"
+            )
+            return
+
+        table = self.ui.MultiLabeltable
+        for r in range(table.rowCount):
+            item = table.item(r, 0)
+            if item and item.text().strip() == feature:
+                table.removeRow(r)
+                break
+
+        self.generateMultiLabelClassButtons()
+
+        slicer.util.infoDisplay(
+            f"Feature '{feature}' deleted.",
+            windowTitle="Deleted"
+        )
+
+    def _qt_get_value(self, w, default=0):
+        """Compat PythonQt: supporta sia w.value che w.value()"""
+        if w is None:
+            return default
+        v = getattr(w, "value", None)
+        try:
+            return v() if callable(v) else int(v)
+        except Exception:
+            return default
+
+    def _qt_get_text(self, w, default=""):
+        """Compat PythonQt: supporta sia w.text che w.text()"""
+        if w is None:
+            return default
+        t = getattr(w, "text", None)
+        try:
+            return t() if callable(t) else str(t)
+        except Exception:
+            return default
+        
+    def _replaceFeatureValuesEverywhere(self, feature_name: str, old_to_new: dict):
+        """
+        old_to_new: {"0":"Facile", "1":"Difficile"} oppure {"Vecchia":"Nuova"}.
+        Aggiorna self.multiClassification in-place.
+        """
+        for pid, feats in self.multiClassification.items():
+            if not isinstance(feats, dict):
+                continue
+            v = feats.get(feature_name, None)
+            if v is None or str(v).strip() == "":
+                continue
+            v = str(v).strip()
+            if v in old_to_new:
+                feats[feature_name] = old_to_new[v]
+
+    def renameMultiFeatureLabels(self, feature_name: str):
+        if not hasattr(self, "multiLabelButtons") or feature_name not in self.multiLabelButtons:
+            return
+
+        btns = self.multiLabelButtons[feature_name]
+        oldMap = dict(self.multiClassNames.get(feature_name, {}))
+
+        dialog = qt.QDialog()
+        dialog.setWindowTitle(f"Rename Labels - {feature_name}")
+        dialog.setModal(True)
+        dialog.setFixedSize(320, 260)
+
+        mainLayout = qt.QVBoxLayout()
+        mainLayout.setContentsMargins(10, 10, 10, 10)
+        dialog.setLayout(mainLayout)
+
+        scrollArea = qt.QScrollArea()
+        scrollArea.setWidgetResizable(True)
+        scrollWidget = qt.QWidget()
+        scrollLayout = qt.QVBoxLayout(scrollWidget)
+        scrollArea.setWidget(scrollWidget)
+        mainLayout.addWidget(scrollArea)
+
+        renameInputs = {}
+
+        for val in sorted(btns.keys()):
+            classRow = qt.QHBoxLayout()
+
+            label = qt.QLabel(f"Class {val}:")
+            label.setFixedWidth(100)
+            label.setStyleSheet("font-size: 12px; font-weight: bold;")
+
+            inputField = qt.QLineEdit()
+            currentName = oldMap.get(str(val), str(val))
+            inputField.setPlaceholderText(currentName)
+            inputField.setText(currentName)
+
+            renameInputs[val] = inputField
+
+            classRow.addWidget(label)
+            classRow.addWidget(inputField)
+            scrollLayout.addLayout(classRow)
+
+        scrollLayout.addStretch(1)
+
+        buttonLayout = qt.QHBoxLayout()
+
+        applyButton = qt.QPushButton("Apply")
+        applyButton.setStyleSheet(
+            "background-color: #4CAF50; color: black; font-weight: bold; padding: 8px; border-radius: 6px;"
+        )
+        applyButton.clicked.connect(lambda: self.applyMultiRenaming(feature_name, renameInputs, dialog))
+
+        cancelButton = qt.QPushButton("Cancel")
+        cancelButton.setStyleSheet(
+            "background-color: #D32F2F; color: black; font-weight: bold; padding: 8px; border-radius: 6px;"
+        )
+        cancelButton.clicked.connect(lambda _=None: dialog.reject())
+
+        buttonLayout.addWidget(cancelButton)
+        buttonLayout.addWidget(applyButton)
+        mainLayout.addLayout(buttonLayout)
+
+        dialog.exec()
+
+
+    def adjustMultiFeatureButtonWidths(self, feature_name: str):
+        if not hasattr(self, "multiLabelButtons") or feature_name not in self.multiLabelButtons:
+            return
+
+        btns = self.multiLabelButtons[feature_name].values()
+        if not btns:
+            return
+
+        fm = qt.QFontMetrics(next(iter(btns)).font)
+        maxW = 0
+        for b in btns:
+            txt = b.text if isinstance(b.text, str) else b.text()
+            maxW = max(maxW, fm.horizontalAdvance(txt))
+
+        target = max(40, maxW + 22)
+
+        for b in btns:
+            b.setMinimumWidth(target)
+            b.setFixedHeight(30)
+            b.setSizePolicy(qt.QSizePolicy.Fixed, qt.QSizePolicy.Fixed)
+
+
+    def restoreMultiUIFromSavedState(self):
+        """
+        Ricostruisce la tabella MultiLabeltable (Feature + Number of classes)
+        partendo dal CSV multi (feature_names) e dal JSON (multiClassNames).
+        Se manca il JSON -> warning + fallback.
+        """
+        # 1) Se non esiste CSV multi / non ci sono feature, non fare nulla
+        feature_names = getattr(self, "multiFeatureNames", []) or []
+        if not feature_names:
+            return
+
+        # 2) Se JSON manca o vuoto: warning e fallback
+        # (qui consideriamo "manca" se loadMultiLabels ritorna {})
+        if not self.multiClassNames:
+            slicer.util.warningDisplay(
+                "⚠️ Multi-label CSV found, but multi_labels.json is missing.\n"
+                "I'll use numeric labels (0/1/2...) until you rename them again.",
+                windowTitle="Missing multi_labels.json"
+            )
+
+        table = self.ui.MultiLabeltable
+        table.blockSignals(True)
+        table.setRowCount(0)
+
+        for r, feature in enumerate(feature_names):
+            table.insertRow(r)
+
+            name_item = qt.QTableWidgetItem(feature)
+            table.setItem(r, 0, name_item)
+
+            spin = qt.QSpinBox()
+            spin.setMinimum(2)
+            spin.setMaximum(10)
+            spin.setAlignment(qt.Qt.AlignCenter)
+            spin.setStyleSheet("background-color: white; color: black;")
+
+
+            min_required = self.getMinClassesForFeature(feature)
+
+            labelMap = self.multiClassNames.get(feature, {}) if isinstance(self.multiClassNames, dict) else {}
+            json_required = 2
+            if isinstance(labelMap, dict) and len(labelMap) > 0:
+                json_required = max(2, len(labelMap))
+
+            spin.setValue(max(min_required, json_required))
+
+            table.setCellWidget(r, 1, spin)
+            spin.valueChanged.connect(lambda _=None, row=r: self.onFeatureCountChanged(row))
+
+        table.blockSignals(False)
+
+        self.populateDeleteFeatureDropdown()
+
+    def getMultiDisplayLabel(self, feature_name: str, raw_value):
+        if raw_value is None:
+            return ""
+        s = str(raw_value).strip()
+        if s == "":
+            return ""
+        return self.multiClassNames.get(feature_name, {}).get(s, s)
+
+    def setLabelModeFromButtons(self, mode):
+        if self.logic.label_mode == mode:
+            return
+
+        self.logic.label_mode = mode
+
+        self.updateSingleMultiButtonsStyle()
+        self.syncModeUI()
+        self.applyLabelModeUI()
+
+        self.clearClassificationArea()
+
+        if self.datasetPath:
+            self.reloadStateFromCSVs()
+            self.multiClassNames = self.logic.loadMultiLabels(self.datasetPath, self.outputPath)
+
+            if self.logic.label_mode == MULTI_LABEL:
+                self.restoreMultiUIFromSavedState()
+
+            self.configureTableByMode()
+
+            if self.logic.label_mode == SINGLE_LABEL:
+                self.generateClassButtons()
+            else:
+                feature_names = self.getGeneratedFeatureNames()
+                if feature_names or (hasattr(self, "multiFeatureNames") and self.multiFeatureNames):
+                    self.generateMultiLabelClassButtons()
+                else:
+                    self.configureClassificationTableForMultiLabel()
+
+            slicer.mrmlScene.Clear(0)
+            slicer.app.processEvents()
+            self.currentPatientID = ""
+            self.loadedPatients = []
+
+            self.updateTable()
+            self.populatePatientDropdown()
+            self.populateFeatureReviewDropdown()
+
+            self.loadNextPatient()
+
+            self.updateTable()
+            self.populatePatientDropdown()
+        else:
+            if self.logic.label_mode == SINGLE_LABEL:
+                self.generateClassButtons()
+
+        self.updateButtonStates()
+
+    # def setLabelModeFromButtons(self, label_mode: str):
+    #     if not hasattr(self.ui, "SingleTab"):
+    #         return
+
+    #     # set mode
+    #     self.logic.label_mode = label_mode
+
+    #     # cambia tab senza triggerare eventi a catena
+    #     self.ui.SingleTab.blockSignals(True)
+    #     self.ui.SingleTab.setCurrentIndex(0 if label_mode == SINGLE_LABEL else 1)
+    #     self.ui.SingleTab.blockSignals(False)
+
+    #     # UI enable/disable
+    #     self.updateSingleMultiButtonsStyle()
+    #     self.applyLabelModeUI()
+
+    #     # se dataset già caricato: ricarica i dict dal CSV corretto e riparti dal primo non annotato
+    #     if self.datasetPath:
+    #         self.reloadStateFromCSVs()     
+    #         self.configureTableByMode()    
+    #         self.updateTable()
+    #         self.populatePatientDropdown()
+    #         self.loadNextPatient()
+    #         self.updateButtonStates()
+
+    def syncModeUI(self):
+        """Rende coerenti: label_mode, tab attiva, tab disabilitata."""
+        if not hasattr(self.ui, "SingleTab"):
+            return
+
+        isSingle = (self.logic.label_mode == SINGLE_LABEL)
+
+        self.ui.SingleTab.blockSignals(True)
+        self.ui.SingleTab.setCurrentIndex(0 if isSingle else 1)
+        self.ui.SingleTab.setTabEnabled(0, isSingle)
+        self.ui.SingleTab.setTabEnabled(1, not isSingle)
+        self.ui.SingleTab.blockSignals(False)
+
+        self.updateSingleMultiButtonsStyle()
+
+    def reloadStateFromCSVs(self):
+        self.singleClassification, self.classNames = self.logic.loadSingleCSV(self.datasetPath, self.outputPath)
+        self.multiClassification, self.multiFeatureNames = self.logic.loadMultiCSV(self.datasetPath, self.outputPath)
+    
+    def configureTableByMode(self):
+        if self.logic.label_mode == SINGLE_LABEL:
+            self.configureClassificationTableForSingleLabel()
+        else:
+            self.configureClassificationTableForMultiLabel()
+
+    def applyLabelModeUI(self):
+        isSingle = (self.logic.label_mode == SINGLE_LABEL)
+
+        self.ui.generateClassesButton.setEnabled(isSingle)
+        self.ui.classCountInput.setEnabled(isSingle)
+        self.ui.renameButton.setEnabled(isSingle)
+
+        self.ui.addRowButton.setEnabled(not isSingle)
+        self.ui.generateMultiButton.setEnabled(not isSingle)
+        if hasattr(self.ui, "MultiLabeltable"):
+            self.ui.MultiLabeltable.setEnabled(not isSingle)
+
+        if getattr(self, "selectFeatureLabel", None):
+            self.selectFeatureLabel.setVisible(not isSingle)
+        elif hasattr(self.ui, "SelectFeature"):
+            self.ui.SelectFeature.setVisible(not isSingle)
+
+        if hasattr(self.ui, "featureReviewDropdown"):
+            self.ui.featureReviewDropdown.setVisible(not isSingle)
+            if isSingle:
+                self.ui.featureReviewDropdown.clear()
+
+    def onSingleTabChanged(self, index: int):
+        newMode = SINGLE_LABEL if index == 0 else MULTI_LABEL
+        self.setLabelModeFromButtons(newMode)
+
+    def updateSingleMultiButtonsStyle(self):
+        isSingle = (self.logic.label_mode == SINGLE_LABEL)
+
+        self.ui.singleButton.blockSignals(True)
+        self.ui.multiButton.blockSignals(True)
+        self.ui.singleButton.setChecked(isSingle)
+        self.ui.multiButton.setChecked(not isSingle)
+        self.ui.singleButton.blockSignals(False)
+        self.ui.multiButton.blockSignals(False)
+
+        self.ui.singleButton.setStyleSheet("font-weight: bold;" if isSingle else "font-weight: normal;")
+        self.ui.multiButton.setStyleSheet("font-weight: normal;" if isSingle else "font-weight: bold;")
+
+    def getGeneratedFeatureNames(self) -> List[str]:
+        if hasattr(self, "multiLabelButtons") and isinstance(self.multiLabelButtons, dict) and self.multiLabelButtons:
+            return list(self.multiLabelButtons.keys())
+
+        if hasattr(self, "multiFeatureNames") and isinstance(self.multiFeatureNames, list) and self.multiFeatureNames:
+            return list(self.multiFeatureNames)
+
+        return []
+
+    def isSingleComplete(self, pid: str) -> bool:
+        v = self.singleClassification.get(pid, None)
+        return v in ("DUPLICATE",) or (v is not None and str(v).strip() != "")
+
+    def isMultiComplete(self, pid: str) -> bool:
+        required = self.getGeneratedFeatureNames()
+        feats = self.multiClassification.get(pid, {})
+        if not required or not isinstance(feats, dict):
+            return False
+
+        all_dup = True
+        for f in required:
+            v = feats.get(f, None)
+            if v is None or str(v).strip() == "":
+                return False
+            if str(v).strip() != "DUPLICATE":
+                all_dup = False
+
+        return True  
+    
+
+    def isPatientCompleteCurrentMode(self, pid: str) -> bool:
+        if self.logic.label_mode == SINGLE_LABEL:
+            return self.isSingleComplete(pid)
+        else:
+            return self.isMultiComplete(pid)
+    
+    def isCurrentPatientMultiLabelComplete(self) -> bool:
+        pid = getattr(self, "currentPatientID", "")
+        if not pid:
+            return False
+
+        required_features = self.getGeneratedFeatureNames()
+        if not required_features:
+            return False  
+
+        feats = self.classificationData.get(pid, {})
+        if not isinstance(feats, dict):
+            return False
+
+        for f in required_features:
+            if f not in feats:
+                return False
+            v = feats.get(f, None)
+            if v is None or str(v).strip() == "":
+                return False
+
+        return True
+
+    def onNextPatientMultiLabelClicked(self):
+        """Passa al paziente successivo (modalità multi-label)."""
+        if getattr(self, "inRandomView", False):
+            self.onLoadNextRandomPatient()
+            return
+
+        if getattr(self, "manualReviewMode", False):
+            self.manualReviewMode = False
+
+        slicer.mrmlScene.Clear(0)
+        slicer.app.processEvents()
+
+        self.loadNextPatient()
+        self.updateButtonStates()
+
+    def onMultiLabelClick(self, feature_name: str, value: int):
+        self.syncLoadedPatientFromViewer()
+        if not self.loadedPatients or not getattr(self, "currentPatientID", ""):
+            slicer.util.errorDisplay("❌ No patient loaded", windowTitle="Classification Error")
+            return
+
+        pid = self.currentPatientID
+        if pid not in self.multiClassification or not isinstance(self.multiClassification.get(pid), dict):
+            self.multiClassification[pid] = {}
+
+        labelMap = self.multiClassNames.get(feature_name, {})
+        label_txt = labelMap.get(str(value), str(value))  
+
+        self.multiClassification[pid][feature_name] = label_txt
+
+        if feature_name in self.multiLabelButtons:
+            for v, b in self.multiLabelButtons[feature_name].items():
+                b.blockSignals(True)
+                b.setChecked(v == value)
+                b.blockSignals(False)
+
+        self.updateTable()
+        self.populatePatientDropdown()
+
+        feature_names = self.getGeneratedFeatureNames()
+        self.logic.saveMultiCSV(self.datasetPath, self.outputPath, self.multiClassification, feature_names)
+
+        if self.isMultiComplete(pid):
+            slicer.mrmlScene.Clear(0)
+            slicer.app.processEvents()
+            self.loadNextPatient()
+            self.updateButtonStates()
+
+    def generateClassButtons(self):
+            """Remove all existing elements and regenerate the classification buttons for Single-Label."""
+            from ClassAnnotationLib.ClassAnnotationUIUtils import getMainColor, getDarkerColor, getLighterColor
+            
+            # --- RESET TABLE TO SINGLE-LABEL STRUCTURE ---
+            t = self.ui.classificationTable
+            t.clear()
+            t.setColumnCount(2)
+            t.setHorizontalHeaderLabels(["Patient ID", "Class"])
+            t.horizontalHeader().setSectionResizeMode(qt.QHeaderView.Stretch)
+            
+            # Set logic mode to single
+            self.logic.label_mode = SINGLE_LABEL
+            self.updateTable()
+
+            # --- GRAPHICAL BUTTON GENERATION ---
+            numClasses = self.ui.classCountInput.value  
+            classificationLayout = self.ui.classificationGroupBox.layout()
+
+            if classificationLayout is None:
+                classificationLayout = qt.QVBoxLayout()
+                self.ui.classificationGroupBox.setLayout(classificationLayout)
+
+            # Clear existing layout
+            def clearLayout(layout):
+                while layout.count():
+                    item = layout.takeAt(0)
+                    w = item.widget()
+                    l = item.layout()
+                    if w:
+                        w.setParent(None)
+                        w.deleteLater()
+                    elif l:
+                        clearLayout(l)
+            clearLayout(classificationLayout)
+
+            self.classButtons.clear()
+            self.classLCDs.clear()
+            self.classCounters = self.logic.countPatientsPerClassFromCSV(self.datasetPath, self.outputPath)
+
+            gridLayout = qt.QGridLayout()
+            gridLayout.setSpacing(5)
+            
+            headerLabel = qt.QLabel("Current Cases per Class")
+            headerLabel.setAlignment(qt.Qt.AlignCenter)
+            headerLabel.setStyleSheet("font-size: 12px; font-weight: bold;")
+            gridLayout.addWidget(headerLabel, 0, 1)
+
+            _, classNamesFromCSV = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
+
+            for classLabel in range(numClasses):
+                row = classLabel + 1  
+                defaultName = f"Class {classLabel}"
+                customName = classNamesFromCSV.get(classLabel, defaultName)
+                button = qt.QPushButton(customName)
+
+                # button = qt.QPushButton(f"Class {classLabel}")
+                button.setStyleSheet(f"""
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                                stop:0 {getLighterColor(classLabel)}, 
+                                stop:0.5 {getMainColor(classLabel)}, 
+                                stop:1 {getDarkerColor(classLabel)});
+                    color: black;
+                    font-weight: bold;
+                    font-size: 14px;
+                    padding: 6px;
+                    border-radius: 6px;
+                    border: 1px solid #555;
+                    box-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
+                """)
+                button.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Fixed)
+                button.setMinimumHeight(30)
+                button.clicked.connect(lambda _, lbl=classLabel: self.onClassifyImage(lbl))
+                self.classButtons[classLabel] = button
+
+                lcdCounter = qt.QLCDNumber()
+                lcdCounter.setDigitCount(2)
+                lcdCounter.display(self.classCounters.get(classLabel, 0))  
+                lcdCounter.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Fixed)
+                lcdCounter.setMinimumHeight(30)
+                self.classLCDs[classLabel] = lcdCounter
+
+                gridLayout.addWidget(button, row, 0)
+                gridLayout.addWidget(lcdCounter, row, 1)
+
+            classificationLayout.addLayout(gridLayout)
+
+            self.ui.classificationGroupBox.setLayout(classificationLayout)
+            self.ui.classificationGroupBox.update()
+
+    def clearMultiButtonsSelection(self):
+        """Deseleziona TUTTI i bottoni della UI multi-label."""
+        if not hasattr(self, "multiLabelButtons") or not isinstance(self.multiLabelButtons, dict):
+            return
+        for feature, btns in self.multiLabelButtons.items():
+            for v, b in btns.items():
+                b.blockSignals(True)
+                b.setChecked(False)
+                b.blockSignals(False)
+
+    def applyMultiButtonsFromPatient(self, pid: str):
+        if not pid or not isinstance(getattr(self, "multiLabelButtons", None), dict):
+            return
+
+        feats = self.multiClassification.get(pid, {})
+        if not isinstance(feats, dict):
+            return
+
+        for feature, btns in self.multiLabelButtons.items():
+            stored = feats.get(feature, None)
+            if stored is None or str(stored).strip() == "":
+                continue
+
+            stored = str(stored).strip()
+
+            labelMap = self.multiClassNames.get(feature, {})         
+            reverse = {v: int(k) for k, v in labelMap.items() if str(k).isdigit()}
+
+            if stored.isdigit():
+                idx = int(stored)
+            else:
+                idx = reverse.get(stored, None)
+
+            if idx is None or idx not in btns:
+                continue
+
+            for v, b in btns.items():
+                b.blockSignals(True)
+                b.setChecked(v == idx)
+                b.blockSignals(False)
+
+    def migrateRenamedFeaturesBeforeGenerate(self):
+        old_features = list(getattr(self, "multiFeatureNames", []) or [])
+
+        table = self.ui.MultiLabeltable
+        new_features = []
+        for r in range(table.rowCount):
+            it = table.item(r, 0)
+            if it and it.text().strip():
+                new_features.append(it.text().strip())
+
+        if not old_features or not new_features:
+            return
+
+        n = min(len(old_features), len(new_features))
+
+        rename_map = {}
+        for i in range(n):
+            old_name = old_features[i]
+            new_name = new_features[i]
+            if old_name != new_name:
+                rename_map[old_name] = new_name
+
+        if not rename_map:
+            return
+
+        new_multi = {}
+
+        for pid, feats in self.multiClassification.items():
+            if not isinstance(feats, dict):
+                new_multi[pid] = {}
+                continue
+
+            updated = {}
+            for k, v in feats.items():
+                updated[rename_map.get(k, k)] = v
+            new_multi[pid] = updated
+
+        new_labels = {}
+        if isinstance(self.multiClassNames, dict):
+            for k, v in self.multiClassNames.items():
+                new_labels[rename_map.get(k, k)] = v
+
+        self.multiClassification = new_multi
+        self.multiClassNames = new_labels
+
+        self.logic.saveMultiCSV(self.datasetPath, self.outputPath, self.multiClassification, new_features)
+        self.logic.saveMultiLabels(self.datasetPath, self.outputPath, self.multiClassNames, overwrite=True)
+
+        self.reloadStateFromCSVs()
+        self.multiClassNames = self.logic.loadMultiLabels(self.datasetPath, self.outputPath)
+
+        try:
+            outDir = self.logic._baseOutputDir(self.datasetPath, self.outputPath)
+            base = os.path.join(outDir, "multi_label")
+
+            for old_name, new_name in rename_map.items():
+                oldDir = os.path.join(base, old_name.replace(" ", "_").replace("/", "_"))
+                if os.path.isdir(oldDir):
+                    shutil.rmtree(oldDir, ignore_errors=True)
+
+                self.logic.rebuildMultiFeatureFolders(
+                    self.datasetPath,
+                    self.outputPath,
+                    new_name,
+                    self.multiClassification,
+                    new_features
+                )
+        except Exception as e:
+            print(f"[WARNING] Feature folder rebuild failed: {e}")
+                    
 
     def renameClassButtons(self):
         """Open a dialog to rename class buttons with scroll layout and styled input fields."""
@@ -197,7 +1142,6 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         mainLayout.setContentsMargins(10, 10, 10, 10)
         dialog.setLayout(mainLayout)
 
-        # Scrollable area
         scrollArea = qt.QScrollArea()
         scrollArea.setWidgetResizable(True)
         scrollWidget = qt.QWidget()
@@ -246,7 +1190,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         cancelButton.setStyleSheet(
             "background-color: #D32F2F; color: black; font-weight: bold; padding: 8px; border-radius: 6px;"
         )
-        cancelButton.clicked.connect(dialog.reject)
+        cancelButton.clicked.connect(lambda _=None: dialog.reject())
 
         buttonLayout.addWidget(cancelButton)
         buttonLayout.addWidget(applyButton)
@@ -280,11 +1224,77 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         if renamed:
             self.updateTable()
-            self.logic.saveClassificationData(self.datasetPath, self.classificationData, self.outputPath)
-            slicer.util.infoDisplay("Class names updated and saved!", windowTitle="Update Successful")
+            self.logic.saveSingleCSV(self.datasetPath, self.outputPath, self.singleClassification)
         else:
             slicer.util.infoDisplay("No changes applied.", windowTitle="No Update")
-    
+
+    def applyMultiRenaming(self, feature_name: str, renameInputs, dialog):
+        if not hasattr(self, "multiLabelButtons") or feature_name not in self.multiLabelButtons:
+            return
+
+        btns = self.multiLabelButtons[feature_name]
+        oldMap = dict(self.multiClassNames.get(feature_name, {}))
+
+        renamed = False
+        newMap = {}
+
+        for val, inputField in renameInputs.items():
+            try:
+                newName = inputField.text().strip()
+            except TypeError:
+                newName = inputField.text.strip()
+
+            oldName = oldMap.get(str(val), str(val))
+
+            if not newName:
+                newName = oldName
+
+            newMap[str(val)] = newName
+
+            if newName != oldName:
+                renamed = True
+
+            if val in btns:
+                btns[val].setText(newName)
+
+        dialog.accept()
+
+        if not renamed:
+            slicer.util.infoDisplay("No changes applied.", windowTitle="No Update")
+            return
+
+        old_to_new = {}
+        for k, oldLabel in oldMap.items():
+            newLabel = newMap.get(k, oldLabel)
+            if oldLabel != newLabel:
+                old_to_new[str(oldLabel)] = str(newLabel)
+
+        self._replaceFeatureValuesEverywhere(feature_name, old_to_new)
+
+        self.multiClassNames[feature_name] = newMap
+        self.logic.saveMultiLabels(self.datasetPath, self.outputPath, self.multiClassNames)
+
+        feature_names = self.getGeneratedFeatureNames()
+        self.logic.saveMultiCSV(
+            self.datasetPath,
+            self.outputPath,
+            self.multiClassification,
+            feature_names
+        )
+
+        self.logic.rebuildMultiFeatureFolders(
+            self.datasetPath,
+            self.outputPath,
+            feature_name,
+            self.multiClassification,
+            feature_names
+        )
+
+        if hasattr(self, "adjustMultiFeatureButtonWidths"):
+            self.adjustMultiFeatureButtonWidths(feature_name)
+
+        self.updateTable()
+        
 
     def updateLCDCounters(self):
         """Update the LCD counters with the number of classified cases for each class."""
@@ -327,6 +1337,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.ui.classCountInput.setValue(minRequiredClasses)
             self.ui.classCountInput.blockSignals(False)
 
+
     def disableAllButtons(self, disable=True):
         """Enable or disable all UI elements."""
         for button in self.classButtons.values():
@@ -339,11 +1350,24 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.generateClassesButton.setEnabled(not disable)
         self.ui.classCountInput.setEnabled(not disable)
         self.ui.renameButton.setEnabled(not disable)
+        self.ui.addRowButton.setEnabled(not disable)
+        self.ui.renameButton.setEnabled(not disable)
+        self.ui.generateMultiButton.setEnabled(not disable)
+        self.ui.DeleteFeatureDropdown.setEnabled(not disable)
+        self.ui.DeleteRow.setEnabled(not disable)
+
 
     def disableClassificationButtons(self, disable: bool):
         """Enable or disable only classification buttons."""
         for button in self.classButtons.values():
             button.setEnabled(not disable)
+
+    def disableSingleLabelMode(self, disable: bool):
+        """Disable only SingleLabel buttons."""
+        self.ui.generateClassesButton.setEnabled(not disable)
+        self.ui.classCountInput.setEnabled(not disable)
+        self.ui.renameButton.setEnabled(not disable)
+
 
     def resetModuleState(self):
         self.classificationData.clear()
@@ -370,27 +1394,30 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.labelOutputPath_advanced.setText("Output Path: ")
 
     def updateButtonStates(self):
-        """Update button states based on the current situation."""
         datasetLoaded = bool(self.datasetPath)
-        self.allPatientsClassified = datasetLoaded and None not in self.classificationData.values()
 
         if not datasetLoaded:
+            self.allPatientsClassified = False
             self.disableAllButtons(True)
-            self.ui.nextPatientButton.setEnabled(False)
-            return  
+            if hasattr(self.ui, "nextPatientButton"):
+                self.ui.nextPatientButton.setEnabled(False)
+            return
+
+        allIDs = self.logic.getAllPatientIDs(self.datasetPath)
+
+        if self.logic.label_mode == SINGLE_LABEL:
+            self.allPatientsClassified = (len(allIDs) > 0) and all(self.isSingleComplete(pid) for pid in allIDs)
+        else:
+            self.allPatientsClassified = False 
 
         self.disableAllButtons(False)
         self.disableClassificationButtons(self.inRandomView)
         self.ui.reviewButton.setEnabled(not self.inRandomView)
-
-        enableNextRandom = self.allPatientsClassified and self.ui.checkBox.isChecked()
+        enableNextRandom = self.inRandomView and bool(self.randomPatientsList) and self.ui.checkBox.isChecked()
         self.ui.nextPatientButton.setEnabled(enableNextRandom)
 
         if self.manualReviewMode:
             self.ui.checkBox.setChecked(False)
-
-        # self.ui.classificationTable.setEnabled(not self.inRandomView)
-
 
     def onSelectOutputFolderClicked(self):
         """Allows the user to select an output folder and update the UI."""
@@ -425,17 +1452,74 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.logic.mode = mode  
         self.onLoadDatasetClicked(mode)  
 
+    def setModeSingleOrMulti(self, mode: str):
+        self.mode = mode  
+        self.logic.mode = mode  
+        self.onLoadDatasetClicked(mode)  
+
+
+    def syncTabsWithTopMode(self):
+        """Se Single è attivo: mostra tab 0 e disabilita tab 1. Viceversa per Multi."""
+        if not hasattr(self.ui, "SingleTab"):
+            return
+
+        isSingle = (self.logic.label_mode == SINGLE_LABEL)
+
+        self.ui.SingleTab.blockSignals(True)
+
+        self.ui.SingleTab.setCurrentIndex(0 if isSingle else 1)
+
+        self.ui.SingleTab.setTabEnabled(0, isSingle)
+        self.ui.SingleTab.setTabEnabled(1, not isSingle)
+
+        self.ui.SingleTab.blockSignals(False)
+
+
     def syncLoadedPatientFromViewer(self):
         """
-        Se nessun volume è registrato in self.loadedPatients, prova a recuperarlo dal viewer.
+        Prova a recuperare un nodo visualizzabile dalla scena (volume o labelmap),
+        e ricava currentPatientID dal nome.
         """
-        bgVolume = slicer.app.layoutManager().sliceWidget("Red").sliceLogic().GetBackgroundLayer().GetVolumeNode()
-        if bgVolume and bgVolume.GetName():
-            self.loadedPatients = [bgVolume]
+        self.loadedPatients = []
+        node = None
+
+        lm = slicer.app.layoutManager()
+        if lm:
+            for sliceName in ("Red", "Yellow", "Green"):
+                try:
+                    sw = lm.sliceWidget(sliceName)
+                    if not sw:
+                        continue
+                    bg = sw.sliceLogic().GetBackgroundLayer().GetVolumeNode()
+                    if bg:
+                        node = bg
+                        break
+                except Exception:
+                    pass
+
+        if node is None:
+            vols = slicer.util.getNodesByClass("vtkMRMLScalarVolumeNode")
+            if vols:
+                node = vols[0]
+
+        if node is None:
+            labs = slicer.util.getNodesByClass("vtkMRMLLabelMapVolumeNode")
+            if labs:
+                node = labs[0]
+
+        if node:
+            self.loadedPatients = [node]
+
+            if not getattr(self, "currentPatientID", ""):
+                try:
+                    from ClassAnnotationLib.ClassAnnotationUtils import extract_patient_id_from_name
+                    self.currentPatientID = extract_patient_id_from_name(node.GetName())
+                except Exception:
+                    name = node.GetName() if hasattr(node, "GetName") else ""
+                    self.currentPatientID = name.split("_")[0] if name else ""
+
 
     def loadDataset(self):
-        """Loads dataset information and updates the UI state."""
-        
         if not self.datasetPath:
             slicer.util.errorDisplay("⚠️ No dataset selected!", windowTitle="Error")
             return
@@ -447,34 +1531,38 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.errorDisplay("⚠️ Dataset contains both files and folders. Use a single format!", windowTitle="Error")
             return
 
-        self.classificationData, _ = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
         allPatientIDs = self.logic.getAllPatientIDs(self.datasetPath)
-
         if not allPatientIDs:
             slicer.util.errorDisplay("⚠️ No patients found in the dataset!", windowTitle="Error")
             return
 
-        unclassifiedPatients = [pid for pid in allPatientIDs if self.classificationData.get(pid) is None]
+        self.reloadStateFromCSVs()
+        self.multiClassNames = self.logic.loadMultiLabels(self.datasetPath, self.outputPath)
+        self.restoreMultiUIFromSavedState()
+        self.populateFeatureReviewDropdown()
 
-        if not unclassifiedPatients:
-            slicer.util.infoDisplay("✔️ All patients classified.", windowTitle="Dataset Fully Classified")
-            self.allPatientsClassified = True
-        else:
-            self.allPatientsClassified = False
+        self.classCounters = self.logic.countPatientsPerClassFromCSV(self.datasetPath, self.outputPath)
 
-        if not self.loadedPatients:
-            self.loadedPatients = slicer.util.getNodesByClass('vtkMRMLScalarVolumeNode')
+        if self.logic.label_mode == SINGLE_LABEL:
+            self.generateClassButtons()
 
-        self.classButtons.clear()
-        self.classLCDs.clear()
+        self.syncModeUI()
+        # self.applyLabelModeUI()  
 
-        self.updateLCDCounters()
-        self.updateTable()
-        self.generateClassButtons()
-        
-        self.updateButtonStates()
+        # if self.logic.label_mode == SINGLE_LABEL:
+        #     self.generateClassButtons()
+        # else:
+        #     self.generateMultiLabelClassButtons()
+
+        self.configureTableByMode()
         self.loadNextPatient()
         self.syncLoadedPatientFromViewer()
+
+        self.updateTable()
+        self.populatePatientDropdown()
+
+        self.updateButtonStates()
+
 
     def onLoadDatasetClicked(self, mode: str):  
         """Load the dataset, update the table, and correctly set the default number of classes."""
@@ -556,33 +1644,32 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.disableAllButtons(True)
             return
 
-        self.classificationData, self.classNames= self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
+        self.reloadStateFromCSVs()
+
         allPatientIDs = self.logic.getAllPatientIDs(self.datasetPath)
+        self.allPatientsClassified = (len(allPatientIDs) > 0) and all(
+            self.isPatientCompleteCurrentMode(pid) for pid in allPatientIDs
+        )
 
-        if len(allPatientIDs) == 0:
-            slicer.util.errorDisplay("⚠️ No patients found in the dataset! Please check your data.", windowTitle="Error")
-            return
-     
-        if not self.classificationData:
-            slicer.util.infoDisplay("⚠️ The dataset needs to be classified. Starting classification mode.", windowTitle="Dataset Not Classified")
-            self.allPatientsClassified = False  
-        else:
-            allPatientIDs = self.logic.getAllPatientIDs(self.datasetPath) 
+        if self.allPatientsClassified:
+            slicer.util.infoDisplay("✔️ The dataset is fully classified.", windowTitle="Dataset Fully Classified")
 
-            self.allPatientsClassified = all(
-                self.classificationData[pid] is not None and self.classificationData[pid] != ""
-                for pid in allPatientIDs
-            )
+        self.updateTable()
 
-            if self.allPatientsClassified:
-                slicer.util.infoDisplay("✔️ The dataset is fully classified. Loading the first patient.", windowTitle="Dataset Fully Classified")
+        # maxClass = 4 
+        # if self.classificationData:
+        #     existingClasses = [int(c) for c in self.classificationData.values() if c is not None and str(c).isdigit()]
+        #     # existingClasses = [c for c in self.classificationData.values() if c is not None]
+        #     if existingClasses:
+        #         maxClass = max(existingClasses)
 
-        maxClass = 4 
-        if self.classificationData:
-            existingClasses = [int(c) for c in self.classificationData.values() if c is not None and str(c).isdigit()]
-            # existingClasses = [c for c in self.classificationData.values() if c is not None]
-            if existingClasses:
-                maxClass = max(existingClasses)
+        maxClass = 4
+        existingClasses = [
+            int(c) for c in self.singleClassification.values()
+            if c is not None and str(c).isdigit()
+        ]
+        if existingClasses:
+            maxClass = max(existingClasses)
 
 
         defaultNumClasses = max(5, maxClass + 1)  
@@ -590,7 +1677,14 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.classCounters = self.logic.countPatientsPerClassFromCSV(self.datasetPath, self.outputPath)
 
-        self.generateClassButtons()
+        self.clearClassificationArea()
+
+        if self.logic.label_mode == SINGLE_LABEL:
+            self.generateClassButtons()
+        else:
+            feature_names = self.getGeneratedFeatureNames()
+            if feature_names or (hasattr(self, "multiFeatureNames") and self.multiFeatureNames):
+                self.generateMultiLabelClassButtons()
 
         csvFilePath = os.path.join(
             self.outputPath if self.mode == ADVANCED_MODE else self.datasetPath,
@@ -668,57 +1762,82 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.updateButtonStates()
             
-            
-            
+                 
     def onCheckToggled(self, checked: bool) -> None:
-        """Activates or deactivates random review and manages button states."""
 
         if checked:
             self.manualReviewMode = False
             self.ui.reviewButton.setEnabled(False)
+
+            self.ui.checkBox.blockSignals(True)
             self.ui.checkBox.setChecked(True)
-            self.ui.classificationTable.setEditTriggers(qt.QAbstractItemView.NoEditTriggers) 
-            self.ui.classificationTable.setSelectionMode(qt.QAbstractItemView.NoSelection) 
+            self.ui.checkBox.blockSignals(False)
 
-            for row in range(self.ui.classificationTable.rowCount):
-                for col in range(self.ui.classificationTable.columnCount):
-                    item = self.ui.classificationTable.item(row, col)
-                    if item:
-                        item.setForeground(qt.QBrush(qt.QColor("black")))  
+            self.ui.classificationTable.setEditTriggers(qt.QAbstractItemView.NoEditTriggers)
+            self.ui.classificationTable.setSelectionMode(qt.QAbstractItemView.NoSelection)
 
-            self.classificationData, self.classNames = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
+            self.reloadStateFromCSVs()
 
-            self.allPatientsClassified = all(
-                label is not None and label != ""
-                for label in self.classificationData.values()
-            )
+            if self.logic.label_mode == SINGLE_LABEL:
+                allIDs = self.logic.getAllPatientIDs(self.datasetPath)
+                self.allPatientsClassified = (len(allIDs) > 0) and all(
+                    self.isPatientCompleteCurrentMode(pid) for pid in allIDs
+                )
+                if not self.allPatientsClassified:
+                    slicer.util.infoDisplay(
+                        "At the end of the classification, the automatic review will start.",
+                        windowTitle="Random Review Mode"
+                    )
+                    self.ui.nextPatientButton.setEnabled(False)
+                    self.updateButtonStates()
+                    return
 
-            if not self.allPatientsClassified:
-                slicer.util.infoDisplay("At the end of the classification, the automatic review will start.", windowTitle="Random Review Mode")
-
-            if self.allPatientsClassified:
                 self.ui.nextPatientButton.setEnabled(True)
-                slicer.util.infoDisplay("✔️ Dataset already classified. Starting automatic review.", windowTitle="Random Review")
+                slicer.util.infoDisplay("✔️ Dataset already classified. Starting automatic review.",
+                                        windowTitle="Random Review")
                 self.startRandomCheck()
-            else:
-                self.ui.nextPatientButton.setEnabled(False)
+                self.updateButtonStates()
+                return
 
-        else:
-  
-            self.inRandomView = False
-            self.randomPatientsList = []
-            self.currentRandomPatientIndex = 0
-            slicer.mrmlScene.Clear(0)
+            if self.logic.label_mode == MULTI_LABEL:
+                feature = self.getSelectedReviewFeature()
 
-            self.currentPatientID = ""  
+                if not feature:
+                    slicer.util.warningDisplay("Select a feature for random review first.",
+                                            windowTitle="Random Review")
+                    self.ui.checkBox.blockSignals(True)
+                    self.ui.checkBox.setChecked(False)
+                    self.ui.checkBox.blockSignals(False)
+                    self.inRandomView = False
+                    self.randomPatientsList = []
+                    self.currentRandomPatientIndex = 0
+                    self.ui.nextPatientButton.setEnabled(False)
+                    self.updateButtonStates()
+                    return
+
+                self.startRandomCheckMultiByFeature(feature)
+                self.updateButtonStates()
+                return
+
+        self.inRandomView = False
+        self.randomPatientsList = []
+        self.currentRandomPatientIndex = 0
+
+        slicer.mrmlScene.Clear(0)
+        slicer.app.processEvents()
+
+        self.currentPatientID = ""
+
+        if self.logic.label_mode == SINGLE_LABEL:
             self.ui.classificationTable.setEditTriggers(qt.QAbstractItemView.AllEditTriggers)
             self.ui.classificationTable.setSelectionMode(qt.QAbstractItemView.SingleSelection)
-            self.updateTable()
-            self.ui.nextPatientButton.setEnabled(False)
+        else:
+            self.ui.classificationTable.setEditTriggers(qt.QAbstractItemView.NoEditTriggers)
+            self.ui.classificationTable.setSelectionMode(qt.QAbstractItemView.SingleSelection)
 
+        self.updateTable()
+        self.ui.nextPatientButton.setEnabled(False)
         self.updateButtonStates()
-
-
 
     def startRandomCheck(self):
         import random
@@ -782,6 +1901,67 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.updateButtonStates()  
         self.onLoadNextRandomPatient() 
 
+    def startRandomCheckMultiByFeature(self, feature_name: str):
+        import random
+
+        self.reloadStateFromCSVs() 
+
+        if not feature_name:
+            slicer.util.warningDisplay("Select a feature for random review.", windowTitle="Missing feature")
+            self.ui.checkBox.setChecked(False)
+            return
+
+        self.randomPatientsList = []
+        self.currentRandomPatientIndex = 0
+        self.inRandomView = True
+
+        # N casi per valore
+        try:
+            numCasesText = self.ui.casesInput.text
+            if callable(numCasesText):
+                numCasesText = numCasesText()
+            self.numCasesPerClass = 5 if str(numCasesText).strip() == "" else int(numCasesText)
+        except Exception:
+            self.numCasesPerClass = 5
+            self.ui.casesInput.setText(str(self.numCasesPerClass))
+
+        allIDs = self.logic.getAllPatientIDs(self.datasetPath)
+
+        patientsByValue = {}
+        for pid in allIDs:
+            feats = self.multiClassification.get(pid, {})
+            if not isinstance(feats, dict):
+                continue
+
+            v = feats.get(feature_name, None)
+            if v is None:
+                continue
+
+            v = str(v).strip()
+            if v == "" or v == "DUPLICATE":
+                continue
+
+            patientsByValue.setdefault(v, []).append(pid)
+
+        if not patientsByValue:
+            slicer.util.errorDisplay(
+                f"⚠️ No patients found with a value for feature '{feature_name}'.",
+                windowTitle="Random Review"
+            )
+            self.ui.checkBox.setChecked(False)
+            self.inRandomView = False
+            return
+
+        self.randomPatientsList = []
+        for value, pids in patientsByValue.items():
+            n = min(len(pids), self.numCasesPerClass)
+            self.randomPatientsList.extend(random.sample(pids, n))
+
+        random.shuffle(self.randomPatientsList)
+
+        self.updateButtonStates()
+        self.onLoadNextRandomPatient()
+
     def onReviewPatientClicked(self):
         """Loads the selected patient for manual review and disables random review."""
         patientID = self.ui.patientDropdown.currentText
@@ -843,47 +2023,62 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.updateButtonStates()
 
-    def loadNextPatient(self):
 
-        unclassified = [
-            pid for pid, label in self.classificationData.items()
-            if label is None or str(label).strip().lower() in ("", "none")
-        ]
+    def loadNextPatient(self):
+        if not self.datasetPath:
+            return
+
+        allIDs = self.logic.getAllPatientIDs(self.datasetPath)
+
+        if self.logic.label_mode == MULTI_LABEL:
+            unclassified = [pid for pid in allIDs if not self.isMultiComplete(pid)]
+        else:
+            unclassified = [pid for pid in allIDs if not self.isSingleComplete(pid)]
+
+        if self.logic.label_mode == MULTI_LABEL:
+            self.patientHashesFromCSV = self.logic.loadCanonicalHashesFromMultiCSV(self.datasetPath, self.outputPath)
+        else:
+            self.patientHashesFromCSV = self.logic.loadHashesFromCSV(self.datasetPath, self.outputPath)
+
+        from ClassAnnotationLib.ClassAnnotationUtils import compute_patient_hashes, findOriginalFile
 
         for patientID in unclassified:
             patientFiles = self.logic.getPatientFilesForReview(self.datasetPath, patientID, self.isHierarchical)
             if not patientFiles:
                 continue
 
-            # Compute hash
-            from ClassAnnotationLib.ClassAnnotationUtils import compute_patient_hashes, findOriginalFile
-            originalPaths = findOriginalFile(self.datasetPath, patientID, self.isHierarchical)
-            hashSet = set(compute_patient_hashes(originalPaths))
-            currentHashString = "|".join(sorted(hashSet))
+            try:
+                originalPaths = findOriginalFile(self.datasetPath, patientID, self.isHierarchical)
+                hashSet = set(compute_patient_hashes(originalPaths))
+                currentHashString = "|".join(sorted(hashSet))
 
-            # Load CSV hashes
-            mode = getattr(self, "mode", "standard")
-            basePath = self.datasetPath if mode == "standard" else self.outputPath
-            self.patientHashesFromCSV = self.logic.loadHashesFromCSV(self.datasetPath, self.outputPath)
+                isDup, originalID = self.isPatientDuplicate(patientID, currentHashString)
+                if isDup:
+                    if self.logic.label_mode == MULTI_LABEL:
+                        self.markAsDuplicateMulti(patientID, originalID)
+                    else:
+                        self.singleClassification[patientID] = "DUPLICATE"
+                        self.logic.saveSingleCSV(self.datasetPath, self.outputPath, self.singleClassification)
+                    continue
+            except Exception as e:
+                print(f"[WARNING] Duplicate/hash check failed for {patientID}: {e}")
 
-            isDup, originalID = self.isPatientDuplicate(patientID, currentHashString)
-            if isDup:
-                self.markAsDuplicate(patientID, originalID)
-                continue
-
-            # Not duplicate, load it
             if self.loadPatientImages((patientID, patientFiles)):
                 self.currentPatientID = patientID
                 self.disableAllButtons(False)
+                self.disableClassificationButtons(False)
                 return
-            else:
-                self.currentPatientID=''
-                continue
+
+            self.currentPatientID = ""
 
         slicer.mrmlScene.Clear(0)
+        slicer.app.processEvents()
         slicer.util.infoDisplay("✔️ All patients classified!", windowTitle="Classification Complete")
         self.currentPatientID = ""
         self.updateTable()
+        self.disableClassificationButtons(True)
+        self.updateButtonStates()
+
 
     def isPatientDuplicate(self, patientID, currentHashString):
         for existingID, existingHashStr in self.patientHashesFromCSV.items():
@@ -893,55 +2088,71 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 return True, existingID
         return False, None
     
-    def markAsDuplicate(self, patientID, duplicateOfID):
+    def markAsDuplicateMulti(self, pid: str, originalID: str):
         slicer.util.warningDisplay(
-            f"⚠️ Patient {patientID} is a duplicate of {duplicateOfID}. It will be skipped.",
+            f"⚠️ Patient {pid} is a duplicate of {originalID}. It will be skipped.",
             windowTitle="Duplicate Detected"
         )
-        self.classificationData[patientID] = "DUPLICATE"
-        self.logic.saveClassificationData(self.datasetPath, self.classificationData, self.outputPath)
+
+        feature_names = self.getGeneratedFeatureNames()
+        if pid not in self.multiClassification or not isinstance(self.multiClassification.get(pid), dict):
+            self.multiClassification[pid] = {}
+
+        for f in feature_names:
+            self.multiClassification[pid][f] = "DUPLICATE"
+
+        self.logic.saveMultiCSV(self.datasetPath, self.outputPath, self.multiClassification, feature_names)
+
         self.updateTable()
-        self.currentPatientID = ""
 
     def tryLoadPatient(self, patientID, fileList):
         from ClassAnnotationLib.ClassAnnotationUtils import compute_patient_hashes, findOriginalFile
 
-        self.patientHashesFromCSV = self.logic.loadHashesFromCSV(self.datasetPath, self.outputPath)
         try:
+
             slicer.mrmlScene.Clear(0)
             self.clearPreviousPatientNodes()
 
             success = self.loadPatientImages((patientID, fileList))
             if not success:
                 self.currentPatientID = ""
-                slicer.util.errorDisplay(f"❌ Error loading patient {patientID}: No images found", windowTitle="Load Error")
+                slicer.util.errorDisplay(
+                    f"❌ Error loading patient {patientID}: No images found",
+                    windowTitle="Load Error"
+                )
                 return
 
             self.currentPatientID = patientID
 
-            # hash
             isHierarchical = self.logic.isHierarchicalDataset(self.datasetPath)
             originalFilePaths = findOriginalFile(self.datasetPath, patientID, isHierarchical)
             hashSet = set(compute_patient_hashes(originalFilePaths))
             currentHashStr = "|".join(sorted(hashSet))
 
-            self.patientHashesFromCSV = self.logic.loadHashesFromCSV(self.datasetPath, self.outputPath)
+            if self.logic.label_mode == MULTI_LABEL:
+                hashesFromCSV = self.logic.loadCanonicalHashesFromMultiCSV(self.datasetPath, self.outputPath)
+            else:
+                hashesFromCSV = self.logic.loadHashesFromCSV(self.datasetPath, self.outputPath)
 
-            for existingID, existingHashStr in self.patientHashesFromCSV.items():
-                if existingID == patientID or not existingHashStr.strip():
+            for existingID, existingHashStr in (hashesFromCSV or {}).items():
+                if existingID == patientID:
+                    continue
+                if not existingHashStr or not str(existingHashStr).strip():
                     continue
 
-                existingHashSet = set(existingHashStr.strip().lower().split('|'))
+                existingHashSet = set(str(existingHashStr).strip().lower().split("|"))
                 if set(h.lower() for h in hashSet) == existingHashSet:
-        
+
                     slicer.util.warningDisplay(
                         f"⚠️ Patient {patientID} is a duplicate of {existingID}. It will be skipped.",
                         windowTitle="Duplicate Detected"
                     )
 
-                    self.classificationData[patientID] = "DUPLICATE"
-                    self.logic.saveClassificationData(self.datasetPath, self.classificationData, self.outputPath)
-                    self.updateTable()
+                    if self.logic.label_mode == MULTI_LABEL:
+                        self.markAsDuplicateMulti(patientID, existingID)
+                    else:
+                        self.singleClassification[patientID] = "DUPLICATE"
+                        self.logic.saveSingleCSV(self.datasetPath, self.outputPath, self.singleClassification)
 
                     slicer.app.processEvents()
                     slicer.mrmlScene.Clear(0)
@@ -956,7 +2167,10 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.app.processEvents()
 
         except Exception as e:
-            slicer.util.errorDisplay(f"❌ Failed to load patient {patientID}: {str(e)}", windowTitle="Error")
+            slicer.util.errorDisplay(
+                f"❌ Failed to load patient {patientID}: {str(e)}",
+                windowTitle="Error"
+            )
 
     def clearPreviousPatientNodes(self):
         for node in getattr(self, "loadedPatients", []):
@@ -1068,7 +2282,11 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.setSliceViewerLayers(background=self.loadedPatients[0])
             slicer.app.processEvents()
             slicer.util.resetSliceViews()
-            self.currentPatientID = patientID 
+            self.currentPatientID = patientID
+
+            if self.logic.label_mode == MULTI_LABEL:
+                self.clearMultiButtonsSelection()
+                self.applyMultiButtonsFromPatient(patientID)
         else:
             self.currentPatientID=''
             slicer.util.errorDisplay(f"❌ Error: No images loaded for {patientID}", windowTitle="Error")
@@ -1081,129 +2299,196 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         else:
             return False
 
-
     def onClassifyImage(self, classLabel):
-        """Classify the current patient, update the CSV, refresh the table, and update LCD counters."""
+        self.syncLoadedPatientFromViewer()
 
-        if not self.loadedPatients:
-            self.syncLoadedPatientFromViewer()
-
-        if not self.loadedPatients or not self.currentPatientID:
-            slicer.util.errorDisplay("❌ Unable to classify: no patient is currently loaded.", windowTitle="Classification Error")
+        if not self.loadedPatients or not getattr(self, "currentPatientID", ""):
+            slicer.util.errorDisplay(
+                f"❌ Unable to classify: no patient ID/volume detected.\n"
+                f"loadedPatients={len(self.loadedPatients)}  currentPatientID='{getattr(self, 'currentPatientID', '')}'",
+                windowTitle="Classification Error"
+            )
             return
 
-        classifiedPatients, self.classNames = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
-        oldClass = classifiedPatients.get(self.currentPatientID)  
+        self.logic.label_mode = SINGLE_LABEL
+        pid = self.currentPatientID
 
+        oldClass = self.singleClassification.get(pid, None)
         if oldClass is not None and oldClass == classLabel and not self.manualReviewMode:
             slicer.util.errorDisplay("⚠️ This patient is already classified as this class!", windowTitle="Error")
-            return  
+            return
 
-
-        self.classificationData[self.currentPatientID] = classLabel
+        self.singleClassification[pid] = classLabel
         self.disableClassificationButtons(True)
 
-        self.logic.saveClassificationData(self.datasetPath, self.classificationData, self.outputPath)
+        self.logic.saveSingleCSV(self.datasetPath, self.outputPath, self.singleClassification)
 
-        if oldClass is not None and oldClass in self.classLCDs:
-            oldCount = max(0, self.classLCDs[oldClass].intValue - 1)
-            self.classLCDs[oldClass].display(oldCount)
-
-        if classLabel in self.classLCDs:
-            newCount = self.classLCDs[classLabel].intValue + 1
-            self.classLCDs[classLabel].display(newCount)
+        self.classCounters = self.logic.countPatientsPerClassFromCSV(self.datasetPath, self.outputPath)
+        for lbl, lcd in self.classLCDs.items():
+            lcd.display(self.classCounters.get(lbl, 0))
 
         self.updateTable()
         self.populatePatientDropdown()
 
-        self.allPatientsClassified = all(
-            label is not None and label != "" for label in self.classificationData.values()
-        )
-
         self.updateButtonStates()
-        slicer.mrmlScene.Clear(0)  
-        slicer.app.processEvents()  
 
-        if self.allPatientsClassified:
-            slicer.util.infoDisplay("✔️ All patients classified!", windowTitle="Classification Complete")
-            if self.ui.checkBox.isChecked():
-                slicer.util.infoDisplay("✔️ Starting automatic review. Click 'Next' to continue.", windowTitle="Review Mode")
-                self.startRandomCheck()
-        else:
-            self.loadNextPatient()
+        slicer.mrmlScene.Clear(0)
+        slicer.app.processEvents()
 
-        self.disableClassificationButtons(False)  
+        self.loadNextPatient()
+
+        self.disableClassificationButtons(False)
+
             
     def updateTable(self):
         from ClassAnnotationLib.ClassAnnotationUIUtils import classColors
 
         self.clearTable()
-
-        if not self.classificationData:
+        if not self.datasetPath:
             return
 
-        sceneIsEmpty = len(self.loadedPatients) == 0
+        t = self.ui.classificationTable
+        allPatientIDs = self.logic.getAllPatientIDs(self.datasetPath)
+
+        sceneIsEmpty = (
+            len(slicer.util.getNodesByClass("vtkMRMLScalarVolumeNode")) == 0
+            and len(slicer.util.getNodesByClass("vtkMRMLLabelMapVolumeNode")) == 0
+            and len(slicer.util.getNodesByClass("vtkMRMLSegmentationNode")) == 0
+        )
         self.blinkItem = None
         self.blinkPatientID = None
 
-        for idx, (patientID, classLabel) in enumerate(self.classificationData.items()):
-            self.ui.classificationTable.insertRow(idx)
+        # -------- MULTI-LABEL TABLE --------
+        if self.logic.label_mode == MULTI_LABEL:
+            feature_names = self.getGeneratedFeatureNames()
 
-            isCurrentPatient = not sceneIsEmpty and hasattr(self, 'currentPatientID') and self.currentPatientID == patientID
-            displayID = f"→ {patientID}" if isCurrentPatient else patientID
+            expected_cols = 1 + len(feature_names)
+            if t.columnCount != expected_cols:
+                self.configureClassificationTableForMultiLabel()
+
+            for row, pid in enumerate(allPatientIDs):
+                t.insertRow(row)
+
+                isCurrent = (not sceneIsEmpty and getattr(self, "currentPatientID", "") == pid)
+                displayID = f"→ {pid}" if isCurrent else pid
+
+                pidItem = qt.QTableWidgetItem(displayID)
+                pidItem.setForeground(qt.QBrush(qt.QColor("black")))
+                t.setItem(row, 0, pidItem)
+                
+                font = qt.QFont()
+                font.setBold(isCurrent and not sceneIsEmpty)
+                pidItem.setFont(font)
+
+                feats = self.multiClassification.get(pid, {})
+                if not isinstance(feats, dict):
+                    feats = {}
+
+                for j, f in enumerate(feature_names):
+                    raw = feats.get(f, "")
+                    disp = self.getMultiDisplayLabel(f, raw)
+                    item = qt.QTableWidgetItem(disp)
+                    item.setForeground(qt.QBrush(qt.QColor("black")))
+                    t.setItem(row, 1 + j, item)
+
+                if isCurrent:
+                    self.blinkItem = pidItem
+                    self.blinkPatientID = pid
+
+            if self.blinkItem:
+                self.blinkTimer.start(300)
+            else:
+                self.blinkTimer.stop()
+            return
+
+        # -------- SINGLE-LABEL TABLE --------
+        if t.columnCount != 2:
+            self.configureClassificationTableForSingleLabel()
+
+        row = 0
+        for pid in allPatientIDs:
+            t.insertRow(row)
+
+            classLabel = self.singleClassification.get(pid, None)
+            if isinstance(classLabel, dict):
+                classLabel = None
+
+            isCurrent = (not sceneIsEmpty and getattr(self, "currentPatientID", "") == pid)
+            displayID = f"→ {pid}" if isCurrent else pid
 
             patientItem = qt.QTableWidgetItem(displayID)
 
             className = ""
-            if classLabel is not None:
-                button = self.classButtons.get(classLabel)
+            if classLabel is not None and classLabel != "DUPLICATE":
+                btn = self.classButtons.get(classLabel)
                 defaultName = f"Class {classLabel}"
-                if button:
-                    actualName = button.text.strip()
+                if btn:
+                    actualName = btn.text.strip()
                     className = actualName if actualName != defaultName else str(classLabel)
                 else:
                     className = str(classLabel)
+            elif classLabel == "DUPLICATE":
+                className = "DUPLICATE"
 
-            classItem = qt.QTableWidgetItem(className if className else "")
+            classItem = qt.QTableWidgetItem(className)
 
-            rowColor = classColors.get(classLabel, "white") if classLabel is not None else "white"
+            rowColor = classColors.get(classLabel, "white") if classLabel not in (None, "DUPLICATE") else "white"
             patientItem.setBackground(qt.QColor(rowColor))
             classItem.setBackground(qt.QColor(rowColor))
-
             patientItem.setForeground(qt.QBrush(qt.QColor("black")))
             classItem.setForeground(qt.QBrush(qt.QColor("black")))
 
-            header = self.ui.classificationTable.horizontalHeader()
-            header.setStyleSheet("QHeaderView::section { color: black; }")
-
-            vHeader = self.ui.classificationTable.verticalHeader()
-            vHeader.setStyleSheet("QHeaderView::section { color: black; }")
-
-            self.ui.classificationTable.setStyleSheet("QTableWidget { color: black; }")
-
             font = qt.QFont()
-            font.setBold(isCurrentPatient and not sceneIsEmpty)
-            font.setWeight(qt.QFont.ExtraBold if isCurrentPatient and not sceneIsEmpty else qt.QFont.Normal)
-
+            font.setBold(isCurrent and not sceneIsEmpty)
             patientItem.setFont(font)
             classItem.setFont(font)
 
-            self.ui.classificationTable.setItem(idx, 0, patientItem)
-            self.ui.classificationTable.setItem(idx, 1, classItem)
+            t.setItem(row, 0, patientItem)
+            t.setItem(row, 1, classItem)
 
-            if isCurrentPatient:
+            if isCurrent:
                 self.blinkItem = patientItem
-                self.blinkPatientID = patientID
+                self.blinkPatientID = pid
 
-        if sceneIsEmpty:
-            self.ui.classificationTable.clearSelection()
-            self.currentPatientID = ""
+            row += 1
 
         if self.blinkItem:
+            self.blinkState = True
             self.blinkTimer.start(300)
         else:
             self.blinkTimer.stop()
 
+    def clearClassificationArea(self):
+        layout = self.ui.classificationGroupBox.layout()
+        if layout is None:
+            layout = qt.QVBoxLayout()
+            self.ui.classificationGroupBox.setLayout(layout)
+
+        while layout.count():
+            item = layout.takeAt(0)
+            w = item.widget()
+            l = item.layout()
+            if w:
+                w.setParent(None)
+                w.deleteLater()
+            elif l:
+                self._clearSubLayout(l)
+
+        self.classButtons.clear()
+        self.classLCDs.clear()
+        if hasattr(self, "multiLabelButtons"):
+            self.multiLabelButtons = {}
+
+    def _clearSubLayout(self, layout):
+        while layout.count():
+            item = layout.takeAt(0)
+            w = item.widget()
+            l = item.layout()
+            if w:
+                w.setParent(None)
+                w.deleteLater()
+            elif l:
+                self._clearSubLayout(l)
 
     def clearTable(self):
         """Clears the classification table."""
@@ -1220,19 +2505,138 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.blinkState = not self.blinkState  
 
     def populatePatientDropdown(self):
-        """Updates the dropdown menu with classified patients."""
-        self.ui.patientDropdown.clear()  
-        self.ui.patientDropdown.addItem("-")
+        dd = self.ui.patientDropdown
+        dd.clear()
+        dd.addItem("-")
 
-        patients, self.classNames = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
-        classifiedPatients = {patientID: classLabel for patientID, classLabel in patients.items() if classLabel is not None and classLabel!="DUPLICATE"}
+        if not self.datasetPath:
+            return
 
-        if not classifiedPatients:
-            return  
+        allIDs = self.logic.getAllPatientIDs(self.datasetPath)
 
-        for patientID in sorted(classifiedPatients):
-            self.ui.patientDropdown.addItem(patientID)
+        if self.logic.label_mode == SINGLE_LABEL:
+            ids_for_review = [
+                pid for pid in allIDs
+                if self.singleClassification.get(pid, None) not in (None, "", "DUPLICATE")
+            ]
+        else:
+            feature_names = self.getGeneratedFeatureNames()
 
+            def is_duplicate_multi(pid: str) -> bool:
+                feats = self.multiClassification.get(pid, {})
+                if not isinstance(feats, dict):
+                    return False
+
+                vals = [str(feats.get(f, "")).strip() for f in feature_names]
+                return (len(feature_names) > 0) and all(v == "DUPLICATE" for v in vals)
+
+            ids_for_review = [
+                pid for pid in allIDs
+                if self.isMultiComplete(pid) and not is_duplicate_multi(pid)
+            ]
+
+        for pid in sorted(ids_for_review):
+            dd.addItem(pid)
+
+    def isMultiCompleteAndNotDuplicate(self, pid: str) -> bool:
+        required = self.getGeneratedFeatureNames()
+        feats = self.multiClassification.get(pid, {})
+        if not required or not isinstance(feats, dict):
+            return False
+
+        any_non_dup = False
+        for f in required:
+            v = feats.get(f, None)
+            if v is None or str(v).strip() == "":
+                return False
+            if str(v).strip() != "DUPLICATE":
+                any_non_dup = True
+
+        return any_non_dup
+
+    def populateDeleteFeatureDropdown(self):
+        """Populate dropdown with the features currently present in the MultiLabel table."""
+        if not hasattr(self.ui, "DeleteFeatureDropdown"):
+            return
+
+        dd = self.ui.DeleteFeatureDropdown
+        dd.blockSignals(True)
+        dd.clear()
+        dd.addItem("-")
+
+        features = []
+
+        if hasattr(self.ui, "MultiLabeltable"):
+            table = self.ui.MultiLabeltable
+            for r in range(table.rowCount):
+                item = table.item(r, 0)
+                if item:
+                    name = item.text().strip()
+                    if name:
+                        features.append(name)
+
+        if not features:
+            features = self.getGeneratedFeatureNames()
+
+        for f in features:
+            dd.addItem(f)
+
+        dd.blockSignals(False)
+
+
+    def populateFeatureReviewDropdown(self):
+        if not hasattr(self.ui, "featureReviewDropdown"):
+            return
+
+        dd = self.ui.featureReviewDropdown
+        dd.blockSignals(True)
+        dd.clear()
+        dd.addItem("-")
+
+        # SOLO features dal json (multi_labels.json)
+        feats = []
+        if isinstance(self.multiClassNames, dict) and self.multiClassNames:
+            feats = sorted(list(self.multiClassNames.keys()))
+
+        for f in feats:
+            dd.addItem(f)
+
+        dd.blockSignals(False)
+
+    def getSelectedReviewFeature(self) -> str:
+        if not hasattr(self.ui, "featureReviewDropdown"):
+            return ""
+        f = self.ui.featureReviewDropdown.currentText
+        if callable(f):  # compat PythonQt
+            f = f()
+        f = (f or "").strip()
+        return "" if f == "-" else f
+
+    def getMinClassesForFeature(self, feature_name: str) -> int:
+        min_required = 2
+
+        for pid, feats in self.multiClassification.items():
+            if not isinstance(feats, dict):
+                continue
+
+            v = feats.get(feature_name, None)
+            if v is None:
+                continue
+
+            s = str(v).strip()
+            if s == "" or s == "DUPLICATE":
+                continue
+
+            try:
+                v_int = int(s)
+            except ValueError:
+                continue
+
+            min_required = max(min_required, v_int + 1)
+
+        return min_required
+
+            
     def onPatientSelected(self):
         """Load the selected patient from the table for classification."""
         from ClassAnnotationLib.ClassAnnotationUtils import compute_patient_hashes
@@ -1311,121 +2715,567 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
         ]
 
         return files
-        
-    def saveClassificationData(self, datasetPath: str, classificationData: dict, outputFolder: str):
-        from ClassAnnotationLib.ClassAnnotationUtils import (
-            movePatientIfReclassified,
-            findOriginalFile,
-            compute_patient_hashes
-        )
-
+    
+    def _baseOutputDir(self, datasetPath: str, outputPath: str) -> str:
         mode = getattr(self, "mode", STANDARD_MODE)
-        finalOutputFolder = os.path.join(datasetPath if mode == "standard" else outputFolder, OUTPUT_FOLDER)
-        os.makedirs(finalOutputFolder, exist_ok=True)
-        csvFilePath = os.path.join(finalOutputFolder, "classification_results.csv")
+        base = datasetPath if mode == STANDARD_MODE else outputPath
+        return os.path.join(base, OUTPUT_FOLDER)
+
+    def _singleCsvPath(self, datasetPath: str, outputPath: str) -> str:
+        return os.path.join(self._baseOutputDir(datasetPath, outputPath), "classification_results.csv")
+
+    def _multiCsvPath(self, datasetPath: str, outputPath: str) -> str:
+        return os.path.join(self._baseOutputDir(datasetPath, outputPath), "result_classification_multiLabel.csv")
+    
+    def loadSingleCSV(self, datasetPath: str, outputPath: str) -> Tuple[dict, dict]:
+        csvFilePath = self._singleCsvPath(datasetPath, outputPath)
+        classifiedPatients = {}
+        classNames = {}
+
+        if os.path.exists(csvFilePath):
+            try:
+                with open(csvFilePath, mode='r') as file:
+                    reader = csv.reader(file)
+                    header = next(reader, None)
+
+                    for row in reader:
+                        if len(row) < 2:
+                            continue
+                        pid = row[0].strip()
+                        rawLabel = row[1].strip()
+
+                        if rawLabel.isdigit():
+                            lbl = int(rawLabel)
+                            classifiedPatients[pid] = lbl
+                            if len(row) >= 3 and row[2].strip():
+                                classNames[lbl] = row[2].strip()
+                        elif rawLabel == "DUPLICATE":
+                            classifiedPatients[pid] = "DUPLICATE"
+                        else:
+                            classifiedPatients[pid] = None
+            except Exception as e:
+                slicer.util.errorDisplay(f"❌ Error while reading single CSV: {str(e)}", windowTitle="Error")
+
+        allIDs = self.getAllPatientIDs(datasetPath)
+        for pid in allIDs:
+            if pid not in classifiedPatients:
+                classifiedPatients[pid] = None
+
+        return classifiedPatients, classNames
+    
+    def loadMultiCSV(self, datasetPath: str, outputPath: str) -> Tuple[dict, List[str]]:
+        csvFilePath = self._multiCsvPath(datasetPath, outputPath)
+        multiDict = {}
+        feature_names = []
+
+        allIDs = self.getAllPatientIDs(datasetPath)
+        for pid in allIDs:
+            multiDict[pid] = {}
+
+        if not os.path.exists(csvFilePath):
+            return multiDict, feature_names
+
+        try:
+            with open(csvFilePath, mode="r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                if not reader.fieldnames:
+                    return multiDict, feature_names
+
+                # Patient ID + (features...) + Hash
+                fields = reader.fieldnames
+                feature_names = [c for c in fields if c not in ("Patient ID", "Hash")]
+
+                for row in reader:
+                    pid = (row.get("Patient ID") or "").strip()
+                    if not pid:
+                        continue
+                    feats = {}
+                    for fn in feature_names:
+                        v = row.get(fn, "")
+                        v = "" if v is None else str(v).strip()
+                        if v != "":
+                            feats[fn] = v  
+                    multiDict[pid] = feats
+        except Exception as e:
+            slicer.util.errorDisplay(f"❌ Error while reading multi CSV: {str(e)}", windowTitle="Error")
+
+        return multiDict, feature_names
+    
+    def saveMultiCSV(self, datasetPath: str, outputPath: str, multiDict: dict, feature_names: List[str]):
+        from ClassAnnotationLib.ClassAnnotationUtils import findOriginalFile, compute_patient_hashes
+
+        outDir = self._baseOutputDir(datasetPath, outputPath)
+        os.makedirs(outDir, exist_ok=True)
+        csvFilePath = self._multiCsvPath(datasetPath, outputPath)
+
+        isHierarchical = self.isHierarchicalDataset(datasetPath)
+        allIDs = self.getAllPatientIDs(datasetPath)
+
+        header = ["Patient ID"] + list(feature_names) + ["Hash"]
+
+        try:
+            with open(csvFilePath, mode="w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=header)
+                writer.writeheader()
+
+                for pid in allIDs:
+                    feats = multiDict.get(pid, {})
+                    if not isinstance(feats, dict):
+                        feats = {}
+
+                    row = {"Patient ID": pid, "Hash": ""}
+
+                    values = []
+                    for fn in feature_names:
+                        v = feats.get(fn, "")
+                        v = "" if v is None else str(v).strip()
+                        row[fn] = v
+                        values.append(v)
+
+                    is_complete = bool(feature_names) and all(v != "" for v in values)
+                    all_duplicate = is_complete and all(v == "DUPLICATE" for v in values)
+
+                    if is_complete and not all_duplicate:
+                        originalPaths = findOriginalFile(datasetPath, pid, isHierarchical)
+                        row["Hash"] = "|".join(sorted(compute_patient_hashes(originalPaths)))
+
+                    writer.writerow(row)
+
+            self._organizeMultiFolders(outDir, datasetPath, isHierarchical, multiDict, feature_names)
+
+        except Exception as e:
+            slicer.util.errorDisplay(f"❌ Error saving multi CSV: {str(e)}", windowTitle="Error")
+        
+    def saveSingleCSV(self, datasetPath: str, outputPath: str, singleDict: dict):
+        from ClassAnnotationLib.ClassAnnotationUtils import findOriginalFile, compute_patient_hashes
+
+        outDir = self._baseOutputDir(datasetPath, outputPath)
+        os.makedirs(outDir, exist_ok=True)
+        csvFilePath = self._singleCsvPath(datasetPath, outputPath)
 
         widget = slicer.modules.classannotation.widgetRepresentation().self()
+        isHierarchical = self.isHierarchicalDataset(datasetPath)
 
-        existingClassNames = {button.text.strip().replace(" ", "_").replace("/", "_") for button in widget.classButtons.values()}
-        for folder in os.listdir(finalOutputFolder):
-            folderPath = os.path.join(finalOutputFolder, folder)
-            if os.path.isdir(folderPath) and folder.startswith("class") and folder not in existingClassNames:
-                shutil.rmtree(folderPath)
-                    
-        try:
-            isHierarchical = self.isHierarchicalDataset(datasetPath)
-            patientToClassName = {}
-
-            previousClassMap = {}
-            if os.path.exists(csvFilePath):
+        previousClassMap = {}
+        if os.path.exists(csvFilePath):
+            try:
                 with open(csvFilePath, newline='') as oldFile:
                     reader = csv.DictReader(oldFile)
                     for row in reader:
-                        pid = row.get("Patient ID", "").strip()
-                        classLabel = row.get("Class", "").strip()
-                        className = row.get("Class Name", "").strip()
+                        pid = (row.get("Patient ID") or "").strip()
                         if pid:
-                            previousClassMap[pid] = (classLabel, className)
+                            previousClassMap[pid] = (row.get("Class", ""), row.get("Class Name", ""))
+            except Exception:
+                pass
 
-            with open(csvFilePath, mode='w', newline='') as file:
-                writer = csv.writer(file)
+        patientToClassName = {}
+        classIdToName = {}  
+
+        try:
+            with open(csvFilePath, mode='w', newline='', encoding="utf-8") as f:
+                writer = csv.writer(f)
                 writer.writerow(["Patient ID", "Class", "Class Name", "Hash"])
 
-                for patientID, classLabel in sorted(classificationData.items()):
-                    hashString = ""
+                for pid in self.getAllPatientIDs(datasetPath):
+                    lbl = singleDict.get(pid, None)
+
                     className = ""
+                    hashString = ""
 
-                    if classLabel is not None and classLabel != "DUPLICATE":
-                        classButton = widget.classButtons.get(classLabel)
-                        defaultName = f"Class {classLabel}"
-                        if classButton:
-                            actualName = classButton.text.strip()
-                            className = actualName if actualName != defaultName else ""
-                        patientToClassName[patientID] = className
+                    if lbl is not None and lbl != "" and lbl != "DUPLICATE":
+                        try:
+                            lbl_int = int(lbl)
+                        except Exception:
+                            lbl_int = lbl 
 
-                        originalFilePaths = findOriginalFile(datasetPath, patientID, isHierarchical)
-                        hashList = sorted(compute_patient_hashes(originalFilePaths))
-                        hashString = "|".join(hashList)
+                        btn = widget.classButtons.get(lbl_int)
+                        if btn:
+                            # actual = btn.text.strip()
+                            try:
+                                actual = btn.text() if callable(btn.text) else btn.text
+                                actual = actual.strip()
+                            except Exception:
+                                actual = ""
+                            className = actual if actual != f"Class {lbl_int}" else ""
 
+                        patientToClassName[pid] = className
+
+                        if isinstance(lbl_int, int) and className:
+                            classIdToName[lbl_int] = className
+
+                        originalPaths = findOriginalFile(datasetPath, pid, isHierarchical)
+                        hashString = "|".join(sorted(compute_patient_hashes(originalPaths)))
+
+                        writer.writerow([pid, lbl_int, className, hashString])
                     else:
-                        patientToClassName[patientID] = None
+                        writer.writerow([pid, lbl if lbl is not None else "", "", ""])
 
-                    writer.writerow([
-                        patientID,
-                        classLabel if classLabel is not None else "",
-                        className,
-                        hashString
-                    ])
+            self._organizeFolders(outDir, singleDict, previousClassMap, patientToClassName, datasetPath, isHierarchical)
 
-            for patientID, classLabel in classificationData.items():
-                if classLabel is None or classLabel == "DUPLICATE":
-                    continue
+            self.cleanupSingleClassFolders(datasetPath, outputPath, singleDict, classIdToName)
 
-                className = patientToClassName.get(patientID, "").strip()
-                classFolderName = className if className else f"class{classLabel}"
-                classFolderName = classFolderName.replace(" ", "_").replace("/", "_")
-                newClassFolder = os.path.join(finalOutputFolder, classFolderName)
-                os.makedirs(newClassFolder, exist_ok=True)
+        except Exception as e:
+            slicer.util.errorDisplay(f"❌ Error saving single CSV: {str(e)}", windowTitle="Error")
+            
+    # def saveClassificationData(self, datasetPath: str, classificationData: dict, outputFolder: str):
+    #     from ClassAnnotationLib.ClassAnnotationUtils import (
+    #         movePatientIfReclassified,
+    #         findOriginalFile,
+    #         compute_patient_hashes
+    #     )
 
-                oldClassLabel, oldClassName = previousClassMap.get(patientID, (None, None))
-                if oldClassLabel is not None and oldClassLabel != str(classLabel):
-                    oldFolderName = oldClassName if oldClassName else f"class{oldClassLabel}"
-                    oldFolderName = oldFolderName.replace(" ", "_").replace("/", "_")
-                    oldPatientFolder = os.path.join(finalOutputFolder, oldFolderName, patientID)
-                    if os.path.exists(oldPatientFolder):
-                        shutil.rmtree(oldPatientFolder)
+    #     mode = getattr(self, "mode", STANDARD_MODE)
+    #     finalOutputFolder = os.path.join(datasetPath if mode == "standard" else outputFolder, OUTPUT_FOLDER)
+    #     os.makedirs(finalOutputFolder, exist_ok=True)
+    #     csvFilePath = os.path.join(finalOutputFolder, "classification_results.csv")
 
-                for folderName in os.listdir(finalOutputFolder):
-                    potentialPath = os.path.join(finalOutputFolder, folderName, patientID)
-                    if os.path.exists(potentialPath) and os.path.isdir(potentialPath):
-                        shutil.rmtree(potentialPath)
+    #     widget = slicer.modules.classannotation.widgetRepresentation().self()
 
-                newPatientFolder = os.path.join(newClassFolder, patientID)
-                os.makedirs(newPatientFolder, exist_ok=True)
-                try:
-                    originalFilePaths = findOriginalFile(datasetPath, patientID, isHierarchical)
-                    for originalFilePath in originalFilePaths:
-                        if originalFilePath:
-                            fileName = os.path.basename(originalFilePath)
-                            destPath = os.path.join(newPatientFolder, fileName)
-                            if not os.path.exists(destPath):
-                                shutil.copy2(originalFilePath, destPath)
-                except Exception as copy_error:
-                    print(f"[WARNING] Failed to copy files for {patientID}: {copy_error}")
+    #     existingClassNames = {button.text.strip().replace(" ", "_").replace("/", "_") for button in widget.classButtons.values()}
+    #     for folder in os.listdir(finalOutputFolder):
+    #         folderPath = os.path.join(finalOutputFolder, folder)
+    #         if os.path.isdir(folderPath) and folder.startswith("class") and folder not in existingClassNames:
+    #             shutil.rmtree(folderPath)
+                    
+    #     try:
+    #         isHierarchical = self.isHierarchicalDataset(datasetPath)
+    #         patientToClassName = {}
+
+    #         previousClassMap = {}
+    #         if os.path.exists(csvFilePath):
+    #             with open(csvFilePath, newline='') as oldFile:
+    #                 reader = csv.DictReader(oldFile)
+    #                 for row in reader:
+    #                     pid = row.get("Patient ID", "").strip()
+    #                     classLabel = row.get("Class", "").strip()
+    #                     className = row.get("Class Name", "").strip()
+    #                     if pid:
+    #                         previousClassMap[pid] = (classLabel, className)
+
+    #         with open(csvFilePath, mode='w', newline='') as file:
+    #             writer = csv.writer(file)
+    #             writer.writerow(["Patient ID", "Class", "Class Name", "Hash"])
+
+    #             for patientID, classLabel in sorted(classificationData.items()):
+    #                 hashString = ""
+    #                 className = ""
+
+    #                 if classLabel is not None and classLabel != "DUPLICATE":
+    #                     classButton = widget.classButtons.get(classLabel)
+    #                     defaultName = f"Class {classLabel}"
+    #                     if classButton:
+    #                         actualName = classButton.text.strip()
+    #                         className = actualName if actualName != defaultName else ""
+    #                     patientToClassName[patientID] = className
+
+    #                     originalFilePaths = findOriginalFile(datasetPath, patientID, isHierarchical)
+    #                     hashList = sorted(compute_patient_hashes(originalFilePaths))
+    #                     hashString = "|".join(hashList)
+
+    #                 else:
+    #                     patientToClassName[patientID] = None
+
+    #                 writer.writerow([
+    #                     patientID,
+    #                     classLabel if classLabel is not None else "",
+    #                     className,
+    #                     hashString
+    #                 ])
+
+    #         for patientID, classLabel in classificationData.items():
+    #             if classLabel is None or classLabel == "DUPLICATE":
+    #                 continue
+
+    #             className = patientToClassName.get(patientID, "").strip()
+    #             classFolderName = className if className else f"class{classLabel}"
+    #             classFolderName = classFolderName.replace(" ", "_").replace("/", "_")
+    #             newClassFolder = os.path.join(finalOutputFolder, classFolderName)
+    #             os.makedirs(newClassFolder, exist_ok=True)
+
+    #             oldClassLabel, oldClassName = previousClassMap.get(patientID, (None, None))
+    #             if oldClassLabel is not None and oldClassLabel != str(classLabel):
+    #                 oldFolderName = oldClassName if oldClassName else f"class{oldClassLabel}"
+    #                 oldFolderName = oldFolderName.replace(" ", "_").replace("/", "_")
+    #                 oldPatientFolder = os.path.join(finalOutputFolder, oldFolderName, patientID)
+    #                 if os.path.exists(oldPatientFolder):
+    #                     shutil.rmtree(oldPatientFolder)
+
+    #             for folderName in os.listdir(finalOutputFolder):
+    #                 potentialPath = os.path.join(finalOutputFolder, folderName, patientID)
+    #                 if os.path.exists(potentialPath) and os.path.isdir(potentialPath):
+    #                     shutil.rmtree(potentialPath)
+
+    #             newPatientFolder = os.path.join(newClassFolder, patientID)
+    #             os.makedirs(newPatientFolder, exist_ok=True)
+    #             try:
+    #                 originalFilePaths = findOriginalFile(datasetPath, patientID, isHierarchical)
+    #                 for originalFilePath in originalFilePaths:
+    #                     if originalFilePath:
+    #                         fileName = os.path.basename(originalFilePath)
+    #                         destPath = os.path.join(newPatientFolder, fileName)
+    #                         if not os.path.exists(destPath):
+    #                             shutil.copy2(originalFilePath, destPath)
+    #             except Exception as copy_error:
+    #                 print(f"[WARNING] Failed to copy files for {patientID}: {copy_error}")
 
                 
-            if hasattr(widget, 'patientHashesFromCSV'):
-                widget.patientHashesFromCSV = self.loadHashesFromCSV(datasetPath, outputFolder)
+    #         if hasattr(widget, 'patientHashesFromCSV'):
+    #             widget.patientHashesFromCSV = self.loadHashesFromCSV(datasetPath, outputFolder)
 
-            for classFolder in os.listdir(finalOutputFolder):
-                fullClassPath = os.path.join(finalOutputFolder, classFolder)
-                if os.path.isdir(fullClassPath):
-                    subitems = [item for item in os.listdir(fullClassPath) if not item.startswith('.')]
-                    if len(subitems) == 0:
-                        shutil.rmtree(fullClassPath)
+    #         for classFolder in os.listdir(finalOutputFolder):
+    #             fullClassPath = os.path.join(finalOutputFolder, classFolder)
+    #             if os.path.isdir(fullClassPath):
+    #                 subitems = [item for item in os.listdir(fullClassPath) if not item.startswith('.')]
+    #                 if len(subitems) == 0:
+    #                     shutil.rmtree(fullClassPath)
                        
-        except Exception as e:
-            slicer.util.errorDisplay(f"❌ Error saving CSV: {str(e)}", windowTitle="Error")
+    #     except Exception as e:
+    #         slicer.util.errorDisplay(f"❌ Error saving CSV: {str(e)}", windowTitle="Error")
+
+    
+
+    # # # def saveClassificationData(self, datasetPath: str, classificationData: dict, outputFolder: str):
+    # # #     import os
+    # # #     import csv
+    # # #     import shutil
+    # # #     from ClassAnnotationLib.ClassAnnotationUtils import findOriginalFile, compute_patient_hashes
+
+    # # #     mode = getattr(self, "mode", "standard")
+    # # #     # Identify if we are in Single or Multi label mode
+    # # #     label_mode = getattr(self, "label_mode", "single") 
+        
+    # # #     finalOutputFolder = os.path.join(datasetPath if mode == "standard" else outputFolder, "output")
+    # # #     os.makedirs(finalOutputFolder, exist_ok=True)
+    # # #     csvFilePath = os.path.join(finalOutputFolder, "classification_results.csv")
+
+    # # #     widget = slicer.modules.classannotation.widgetRepresentation().self()
+    # # #     isHierarchical = self.isHierarchicalDataset(datasetPath)
+
+    # # #     try:
+    # # #         # --- CASE 1: MULTI-LABEL MODE ---
+    # # #         if label_mode == "multi":
+    # # #             csvFilePath = os.path.join(finalOutputFolder, "result_classification_multiLabel.csv")
+
+    # # #             # lista COMPLETA pazienti
+    # # #             allPatientIDs = self.getAllPatientIDs(datasetPath)
+
+    # # #             # feature names: unione delle feature presenti nei pazienti multi-label
+    # # #             feature_set = set()
+    # # #             for v in classificationData.values():
+    # # #                 if isinstance(v, dict):
+    # # #                     feature_set.update(v.keys())
+    # # #             feature_names = sorted(feature_set)
+
+    # # #             header = ["Patient ID"] + feature_names + ["Hash"]
+
+    # # #             with open(csvFilePath, mode="w", newline="") as file:
+    # # #                 writer = csv.DictWriter(file, fieldnames=header)
+    # # #                 writer.writeheader()
+
+    # # #                 for patientID in allPatientIDs:
+    # # #                     features = classificationData.get(patientID, None)
+
+    # # #                     row = {"Patient ID": patientID}
+
+    # # #                     # default: tutto vuoto (così per i non classificati resta solo ID)
+    # # #                     for f in feature_names:
+    # # #                         row[f] = ""
+    # # #                     row["Hash"] = ""
+
+    # # #                     # se il paziente è multi-label e ha almeno una feature valorizzata
+    # # #                     if isinstance(features, dict) and any(
+    # # #                         v is not None and str(v).strip() != "" for v in features.values()
+    # # #                     ):
+    # # #                         # riempi feature
+    # # #                         for f in feature_names:
+    # # #                             row[f] = features.get(f, "")
+
+    # # #                         # HASH con la STESSA logica del single-label
+    # # #                         originalPaths = findOriginalFile(datasetPath, patientID, isHierarchical)
+    # # #                         row["Hash"] = "|".join(sorted(compute_patient_hashes(originalPaths)))
+
+    # # #                     writer.writerow(row)
+
+    # # #             return
+
+    # # #         # --- CASE 2: SINGLE-LABEL MODE ---
+    # # #         # Clean up old class folders that no longer exist in the UI
+    # # #         existingClassNames = {btn.text.strip().replace(" ", "_").replace("/", "_") for btn in widget.classButtons.values()}
+    # # #         for folder in os.listdir(finalOutputFolder):
+    # # #             fPath = os.path.join(finalOutputFolder, folder)
+    # # #             if os.path.isdir(fPath) and folder.startswith("class") and folder not in existingClassNames:
+    # # #                 shutil.rmtree(fPath)
+
+    # # #         previousClassMap = {}
+    # # #         if os.path.exists(csvFilePath):
+    # # #             with open(csvFilePath, newline='') as oldFile:
+    # # #                 reader = csv.DictReader(oldFile)
+    # # #                 for row in reader:
+    # # #                     pid = row.get("Patient ID", "").strip()
+    # # #                     if pid:
+    # # #                         previousClassMap[pid] = (row.get("Class", ""), row.get("Class Name", ""))
+
+    # # #         # Save CSV for Single-Label
+    # # #         patientToClassName = {}
+    # # #         with open(csvFilePath, mode='w', newline='') as file:
+    # # #             writer = csv.writer(file)
+    # # #             writer.writerow(["Patient ID", "Class", "Class Name", "Hash"])
+
+    # # #             for patientID, classLabel in sorted(classificationData.items()):
+    # # #                 if isinstance(classLabel, dict): continue # Skip multi-label data if in single mode
+                    
+    # # #                 className = ""
+    # # #                 hashString = ""
+    # # #                 if classLabel is not None and classLabel != "DUPLICATE":
+    # # #                     btn = widget.classButtons.get(classLabel)
+    # # #                     if btn:
+    # # #                         actualName = btn.text.strip()
+    # # #                         className = actualName if actualName != f"Class {classLabel}" else ""
+                        
+    # # #                     patientToClassName[patientID] = className
+    # # #                     originalPaths = findOriginalFile(datasetPath, patientID, isHierarchical)
+    # # #                     hashString = "|".join(sorted(compute_patient_hashes(originalPaths)))
+
+    # # #                 writer.writerow([patientID, classLabel if classLabel is not None else "", className, hashString])
+
+    # # #         # Physically organize files into class folders
+    # # #         self._organizeFolders(finalOutputFolder, classificationData, previousClassMap, patientToClassName, datasetPath, isHierarchical)
+
+    # # #     except Exception as e:
+    # # #         slicer.util.errorDisplay(f"❌ Error during save: {str(e)}")
+
+    def loadExistingCSV(self, datasetPath: str, outputPath: str) -> Tuple[dict, dict]:
+        return self.loadSingleCSV(datasetPath, outputPath)
+    
+    def saveClassificationData(self, datasetPath: str, classificationData: dict, outputFolder: str):
+        label_mode = getattr(self, "label_mode", SINGLE_LABEL)
+        widget = slicer.modules.classannotation.widgetRepresentation().self()
+
+        if label_mode == MULTI_LABEL:
+            feature_names = widget.getGeneratedFeatureNames() if hasattr(widget, "getGeneratedFeatureNames") else []
+            return self.saveMultiCSV(datasetPath, outputFolder, classificationData, feature_names)
+
+        return self.saveSingleCSV(datasetPath, outputFolder, classificationData)
+
+
+    def _organizeFolders(self, finalOutputFolder, classificationData, previousClassMap, patientToClassName, datasetPath, isHierarchical):
+        import os
+        import shutil
+        from ClassAnnotationLib.ClassAnnotationUtils import findOriginalFile
+
+        for patientID, classLabel in classificationData.items():
+            if classLabel is None or classLabel == "DUPLICATE" or isinstance(classLabel, dict):
+                continue
+
+            className = patientToClassName.get(patientID, "").strip()
+            classFolderName = (className if className else f"class{classLabel}").replace(" ", "_").replace("/", "_")
+            newClassFolder = os.path.join(finalOutputFolder, classFolderName)
+            os.makedirs(newClassFolder, exist_ok=True)
+
+            # Remove patient from old class folder if reclassified
+            oldLabel, oldName = previousClassMap.get(patientID, (None, None))
+            if oldLabel is not None and str(oldLabel) != str(classLabel):
+                oldFolderName = (oldName if oldName else f"class{oldLabel}").replace(" ", "_").replace("/", "_")
+                oldPatientPath = os.path.join(finalOutputFolder, oldFolderName, patientID)
+                if os.path.exists(oldPatientPath):
+                    shutil.rmtree(oldPatientPath)
+
+            # Ensure patient folder exists in the new class directory
+            newPatientFolder = os.path.join(newClassFolder, patientID)
+            os.makedirs(newPatientFolder, exist_ok=True)
+
+            # Copy original files to the new location
+            try:
+                originalFilePaths = findOriginalFile(datasetPath, patientID, isHierarchical)
+                for origPath in originalFilePaths:
+                    if origPath:
+                        destPath = os.path.join(newPatientFolder, os.path.basename(origPath))
+                        if not os.path.exists(destPath):
+                            shutil.copy2(origPath, destPath)
+            except Exception as err:
+                print(f"[WARNING] Copy failed for {patientID}: {err}")
+
+    def _organizeMultiFolders(self, outDir: str, datasetPath: str, isHierarchical: bool,
+                            multiDict: dict, feature_names: List[str]):
+        """
+        Crea/aggiorna:
+        outDir/multi_label/<feature>/class_<label>/<patientID>/
+        Copia i file originali dentro la cartella paziente.
+
+        Nota: in MULTI tu salvi nel dict/CSV le LABEL testuali (es: "Facile", "Difficile"),
+        quindi qui usiamo sempre class_<label>.
+        """
+        import re
+        import shutil
+        from ClassAnnotationLib.ClassAnnotationUtils import findOriginalFile
+
+        def _safe_name(s: str) -> str:
+            s = (s or "").strip()
+            s = s.replace(" ", "_").replace("/", "_").replace("\\", "_")
+            s = re.sub(r"[^\w\-\u00C0-\u017F]+", "", s)
+            return s if s else "NA"
+
+        base = os.path.join(outDir, "multi_label")
+        os.makedirs(base, exist_ok=True)
+
+        allIDs = self.getAllPatientIDs(datasetPath)
+
+        for pid in allIDs:
+            feats = multiDict.get(pid, {})
+            if not isinstance(feats, dict):
+                continue
+
+            try:
+                originalPaths = findOriginalFile(datasetPath, pid, isHierarchical)
+            except Exception:
+                originalPaths = []
+            for feature in feature_names:
+                featureDir = os.path.join(base, _safe_name(feature))
+                os.makedirs(featureDir, exist_ok=True)  
+
+                try:
+                    for c in os.listdir(featureDir):
+                        cand = os.path.join(featureDir, c, pid)
+                        if os.path.isdir(cand):
+                            shutil.rmtree(cand, ignore_errors=True)
+                except Exception:
+                    pass
+
+            for feature in feature_names:
+                raw = feats.get(feature, None)
+                if raw is None:
+                    continue
+
+                label = str(raw).strip()
+                if label == "" or label == "DUPLICATE":
+                    continue
+
+                featureDir = os.path.join(base, _safe_name(feature))
+                classDir = os.path.join(featureDir, f"class_{_safe_name(label)}")
+                patientDir = os.path.join(classDir, pid)
+
+                os.makedirs(patientDir, exist_ok=True)
+
+                for src in originalPaths:
+                    if not src or not os.path.exists(src):
+                        continue
+                    dst = os.path.join(patientDir, os.path.basename(src))
+                    if not os.path.exists(dst):
+                        shutil.copy2(src, dst)
+
+        self._cleanupEmptyDirs(base)
+
+    def _cleanupEmptyDirs(self, rootDir: str):
+        """Rimuove ricorsivamente directory vuote."""
+        for dirpath, dirnames, filenames in os.walk(rootDir, topdown=False):
+            visible_files = [f for f in filenames if not f.startswith(".")]
+            visible_dirs = [d for d in dirnames if not d.startswith(".")]
+
+            if len(visible_files) == 0 and len(visible_dirs) == 0:
+                try:
+                    os.rmdir(dirpath)
+                except Exception:
+                    pass
 
 
     def getPatientFilesForReview(self, datasetPath: str, patientID: str, isHierarchical: bool) -> List[str]:
@@ -1454,56 +3304,55 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
         return patientFiles
 
 
-    def loadExistingCSV(self, datasetPath: str, outputPath: str) -> Tuple[dict, dict]:
-        """Upload the data of the patients classified by the correct CSV according to the mode.
-        Also retrieves class names from the CSV if available.
-        """
+    # def loadExistingCSV(self, datasetPath: str, outputPath: str) -> Tuple[dict, dict]:
+    #     """Upload the data of the patients classified by the correct CSV according to the mode.
+    #     Also retrieves class names from the CSV if available.
+    #     """
 
-        mode = getattr(self, "mode", STANDARD_MODE)
+    #     mode = getattr(self, "mode", STANDARD_MODE)
 
-        if mode == "standard":
-            csvFilePath = os.path.join(datasetPath, OUTPUT_FOLDER, "classification_results.csv")
-        else:
-            csvFilePath = os.path.join(outputPath, OUTPUT_FOLDER, "classification_results.csv")
+    #     if mode == "standard":
+    #         csvFilePath = os.path.join(datasetPath, OUTPUT_FOLDER, "classification_results.csv")
+    #     else:
+    #         csvFilePath = os.path.join(outputPath, OUTPUT_FOLDER, "classification_results.csv")
 
-        classifiedPatients = {}
-        classNames = {}
+    #     classifiedPatients = {}
+    #     classNames = {}
 
-        if os.path.exists(csvFilePath):
-            try:
-                with open(csvFilePath, mode='r') as file:
-                    reader = csv.reader(file)
-                    header = next(reader, None)  # skip header
+    #     if os.path.exists(csvFilePath):
+    #         try:
+    #             with open(csvFilePath, mode='r') as file:
+    #                 reader = csv.reader(file)
+    #                 header = next(reader, None)  # skip header
 
-                    for row in reader:
-                        if len(row) >= 2:
-                            patientID = row[0].strip()
-                            rawLabel = row[1].strip()
+    #                 for row in reader:
+    #                     if len(row) >= 2:
+    #                         patientID = row[0].strip()
+    #                         rawLabel = row[1].strip()
 
-                            if rawLabel.isdigit():
-                                classLabel = int(rawLabel)
-                                classifiedPatients[patientID] = classLabel
+    #                         if rawLabel.isdigit():
+    #                             classLabel = int(rawLabel)
+    #                             classifiedPatients[patientID] = classLabel
 
-                                if len(row) >= 3:
-                                    className = row[2].strip()
-                                    if className:
-                                        classNames[classLabel] = className
+    #                             if len(row) >= 3:
+    #                                 className = row[2].strip()
+    #                                 if className:
+    #                                     classNames[classLabel] = className
 
-                            elif rawLabel == "DUPLICATE":
-                                classifiedPatients[patientID] = "DUPLICATE"
-                            else:
-                                classifiedPatients[patientID] = None
+    #                         elif rawLabel == "DUPLICATE":
+    #                             classifiedPatients[patientID] = "DUPLICATE"
+    #                         else:
+    #                             classifiedPatients[patientID] = None
 
-            except Exception as e:
-                slicer.util.errorDisplay(f"❌ Error while reading CSV: {str(e)}", windowTitle="Error")
+    #         except Exception as e:
+    #             slicer.util.errorDisplay(f"❌ Error while reading CSV: {str(e)}", windowTitle="Error")
 
-        # Add any unclassified patients found in the dataset
-        allPatientIDs = self.getAllPatientIDs(datasetPath)
-        for patientID in allPatientIDs:
-            if patientID not in classifiedPatients:
-                classifiedPatients[patientID] = None
+    #     allPatientIDs = self.getAllPatientIDs(datasetPath)
+    #     for patientID in allPatientIDs:
+    #         if patientID not in classifiedPatients:
+    #             classifiedPatients[patientID] = None
 
-        return classifiedPatients, classNames
+    #     return classifiedPatients, classNames
 
 
     def countPatientsPerClassFromCSV(self, datasetPath: str, outputPath: str) -> dict:
@@ -1536,14 +3385,40 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
         return classCounts
 
 
+    def isMultiFeatureUsed(self, datasetPath: str, outputPath: str, feature_name: str) -> bool:
+        """Return True if the feature column exists and has at least one non-empty value."""
+        csvFilePath = self._multiCsvPath(datasetPath, outputPath)
+        if not os.path.exists(csvFilePath):
+            return False
+
+        try:
+            with open(csvFilePath, mode="r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                if not reader.fieldnames or feature_name not in reader.fieldnames:
+                    return False
+
+                for row in reader:
+                    v = row.get(feature_name, "")
+                    if v is not None and str(v).strip() != "":
+                        return True
+        except Exception as e:
+            slicer.util.errorDisplay(f" Error reading multi CSV: {str(e)}", windowTitle="Error")
+            return True  
+
+        return False
 
 
+    def removeMultiFeatureColumn(self, datasetPath: str, outputPath: str, feature_names: List[str]):
+        """
+        Rewrite the multi-label CSV using the provided feature_names as the new set of columns.
+        (feature_names = lista DOPO la rimozione)
+        """
 
+        widget = slicer.modules.classannotation.widgetRepresentation().self()
+        multiDict = getattr(widget, "multiClassification", {})
 
+        self.saveMultiCSV(datasetPath, outputPath, multiDict, feature_names)
 
-
-
-    
         
     def getAllPatientIDs(self, datasetPath: str) -> List[str]:
         """Retrieves all patient IDs in the dataset, including unclassified ones."""
@@ -1556,8 +3431,6 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
                         and d.lower() != OUTPUT_FOLDER and not d.startswith('.')}
 
         elif self.isFlatDataset(datasetPath):
-            #allFiles = [f for f in os.listdir(datasetPath) if os.path.isfile(os.path.join(datasetPath, f)) 
-                        #and f.lower() != OUTPUT_FOLDER and not f.startswith('.') and f != 'classification_results.csv']
             allFiles = [
                 f for f in os.listdir(datasetPath)
                 if os.path.isfile(os.path.join(datasetPath, f))
@@ -1567,12 +3440,10 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
             ]
             for fileName in allFiles:
                 patientID = extract_patient_id_from_name(fileName)
-                # patientID = fileName.split("_")[0]  
                 patientIDs.add(patientID)
         
         return sorted(patientIDs)
     
-
 
     def loadHashesFromCSV(self, datasetPath: str, outputPath: str) -> Dict[str, str]:
         import csv
@@ -1603,3 +3474,210 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
             print(f"[ERROR] Failed to read CSV: {str(e)}")
 
         return patientHashes
+
+
+    def _multiLabelsJsonPath(self, datasetPath, outputPath):
+        return os.path.join(self._baseOutputDir(datasetPath, outputPath), "multi_labels.json")
+    
+
+    def loadMultiLabels(self, datasetPath, outputPath):
+        p = self._multiLabelsJsonPath(datasetPath, outputPath)
+        if not os.path.exists(p):
+            return {}
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def saveMultiLabels(self, datasetPath, outputPath, labelsDict, overwrite: bool = False):
+        outDir = self._baseOutputDir(datasetPath, outputPath)
+        os.makedirs(outDir, exist_ok=True)
+        p = self._multiLabelsJsonPath(datasetPath, outputPath)
+
+        if overwrite:
+            merged = labelsDict if isinstance(labelsDict, dict) else {}
+        else:
+            existing = {}
+            if os.path.exists(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        existing = json.load(f)
+                    if not isinstance(existing, dict):
+                        existing = {}
+                except Exception:
+                    existing = {}
+
+            merged = dict(existing)
+            if isinstance(labelsDict, dict):
+                for k, v in labelsDict.items():
+                    merged[k] = v
+
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(merged, f, indent=2, ensure_ascii=False)
+        try:
+            os.replace(tmp, p)
+        except Exception:
+            shutil.copy2(tmp, p)
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+            
+    def rebuildMultiFeatureFolders(self, datasetPath: str, outputPath: str,
+                                feature_name: str,
+                                multiDict: dict,
+                                feature_names: List[str]):
+        """
+        Ricostruisce outDir/multi_label/<feature_name>/...
+        eliminando la vecchia cartella della feature e ricreandola dal multiDict attuale.
+        """
+        outDir = self._baseOutputDir(datasetPath, outputPath)
+        base = os.path.join(outDir, "multi_label")
+        featureDir = os.path.join(base, feature_name.replace(" ", "_").replace("/", "_"))
+
+        if os.path.isdir(featureDir):
+            shutil.rmtree(featureDir, ignore_errors=True)
+
+        os.makedirs(base, exist_ok=True)
+
+        isHierarchical = self.isHierarchicalDataset(datasetPath)
+        allIDs = self.getAllPatientIDs(datasetPath)
+
+        from ClassAnnotationLib.ClassAnnotationUtils import findOriginalFile
+
+        for pid in allIDs:
+            feats = multiDict.get(pid, {})
+            if not isinstance(feats, dict):
+                continue
+
+            raw = feats.get(feature_name, None)
+            if raw is None:
+                continue
+
+            label = str(raw).strip()
+            if label == "" or label == "DUPLICATE":
+                continue
+
+            label = str(raw).strip()
+            safe_label = label.replace(" ", "_").replace("/", "_")
+
+            classDir = os.path.join(featureDir, f"class_{safe_label}")
+            patientDir = os.path.join(classDir, pid)
+            os.makedirs(patientDir, exist_ok=True)
+
+            try:
+                originalPaths = findOriginalFile(datasetPath, pid, isHierarchical)
+            except Exception:
+                originalPaths = []
+
+            for src in originalPaths:
+                if not src or not os.path.exists(src):
+                    continue
+                dst = os.path.join(patientDir, os.path.basename(src))
+                if not os.path.exists(dst):
+                    shutil.copy2(src, dst)
+
+        self._cleanupEmptyDirs(base)
+
+
+    def loadHashesFromMultiCSV(self, datasetPath: str, outputPath: str) -> Dict[str, str]:
+        csvPath = self._multiCsvPath(datasetPath, outputPath)
+        hashes = {}
+        if not os.path.exists(csvPath):
+            return hashes
+
+        try:
+            with open(csvPath, mode="r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                if not reader.fieldnames or "Hash" not in reader.fieldnames:
+                    return hashes
+
+                for row in reader:
+                    pid = (row.get("Patient ID") or "").strip()
+                    h = (row.get("Hash") or "").strip()
+                    if pid and h:
+                        hashes[pid] = h
+        except Exception as e:
+            print(f"[ERROR] Failed to read multi CSV hashes: {e}")
+
+        return hashes
+
+
+    def _safe_folder(self, s: str) -> str:
+        s = (s or "").strip()
+        return s.replace(" ", "_").replace("/", "_").replace("\\", "_")
+
+    def cleanupSingleClassFolders(self, datasetPath: str, outputPath: str, singleDict: dict, classIdToName: dict):
+        """
+        Elimina cartelle di classe residue in outDir/output/.
+        Cancella solo directory che sembrano class-folder.
+        """
+        outDir = self._baseOutputDir(datasetPath, outputPath)
+        if not os.path.isdir(outDir):
+            return
+
+        allowed = set()
+        for pid, lbl in (singleDict or {}).items():
+            if lbl is None or lbl == "" or lbl == "DUPLICATE" or isinstance(lbl, dict):
+                continue
+            name = (classIdToName or {}).get(lbl, "") 
+            folder = self._safe_folder(name) if name else f"class{lbl}"
+            allowed.add(folder)
+
+        if not allowed:
+            return
+
+        for d in os.listdir(outDir):
+            full = os.path.join(outDir, d)
+            if not os.path.isdir(full):
+                continue
+            if d == "multi_label":
+                continue
+
+            looks_like_class = bool(re.match(r"^class\d+.*$", d, re.IGNORECASE)) or (d in set(self._safe_folder(v) for v in (classIdToName or {}).values() if v))
+            if not looks_like_class:
+                continue
+
+            if d not in allowed:
+                shutil.rmtree(full, ignore_errors=True)
+
+        self._cleanupEmptyDirs(outDir)
+
+    def loadCanonicalHashesFromMultiCSV(self, datasetPath: str, outputPath: str) -> Dict[str, str]:
+        csvPath = self._multiCsvPath(datasetPath, outputPath)
+        hashes = {}
+
+        if not os.path.exists(csvPath):
+            return hashes
+
+        try:
+            with open(csvPath, mode="r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                if not reader.fieldnames or "Hash" not in reader.fieldnames:
+                    return hashes
+
+                feature_names = [c for c in reader.fieldnames if c not in ("Patient ID", "Hash")]
+
+                for row in reader:
+                    pid = (row.get("Patient ID") or "").strip()
+                    h = (row.get("Hash") or "").strip()
+
+                    if not pid or not h:
+                        continue
+
+                    values = [str(row.get(fn, "")).strip() for fn in feature_names]
+
+                    if not feature_names:
+                        continue
+
+                    if any(v == "" for v in values):
+                        continue
+
+                    if all(v == "DUPLICATE" for v in values):
+                        continue
+
+                    hashes[pid] = h
+
+        except Exception as e:
+            print(f"[ERROR] Failed to read canonical multi CSV hashes: {e}")
+
+        return hashes
