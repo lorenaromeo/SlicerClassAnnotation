@@ -15,15 +15,11 @@ import os, re, shutil, sys
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 LIB_DIR = os.path.join(MODULE_DIR, "ClassAnnotationLib")
 
-print("MODULE_DIR =", MODULE_DIR)
-print("LIB_DIR =", LIB_DIR)
-print("LIB exists =", os.path.isdir(LIB_DIR))
-print("UIUtils exists =", os.path.isfile(os.path.join(LIB_DIR, "ClassAnnotationUIUtils.py")))
+
 
 if LIB_DIR not in sys.path:
     sys.path.insert(0, LIB_DIR)
 
-print("sys.path[0:5] =", sys.path[:5])
 
 SUPPORTED_FORMATS = (
     ".nrrd", ".nii", ".nii.gz", ".dcm", ".DCM", ".mha",
@@ -95,7 +91,6 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         uiWidget = slicer.util.loadUI(uiPath)
         self.layout.addWidget(uiWidget)
         self.ui = slicer.util.childWidgetVariables(uiWidget)
-        print([n for n in dir(self.ui) if "Feature" in n or "Select" in n])
         self.uiWidget = uiWidget
         self.selectFeatureLabel = getattr(self.ui, "SelectFeature", None)
         if self.selectFeatureLabel is None:
@@ -625,18 +620,11 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
 
     def restoreMultiUIFromSavedState(self):
-        """
-        Ricostruisce la tabella MultiLabeltable (Feature + Number of classes)
-        partendo dal CSV multi (feature_names) e dal JSON (multiClassNames).
-        Se manca il JSON -> warning + fallback.
-        """
-        # 1) Se non esiste CSV multi / non ci sono feature, non fare nulla
+
         feature_names = getattr(self, "multiFeatureNames", []) or []
         if not feature_names:
             return
 
-        # 2) Se JSON manca o vuoto: warning e fallback
-        # (qui consideriamo "manca" se loadMultiLabels ritorna {})
         if not self.multiClassNames:
             slicer.util.warningDisplay(
                 "⚠️ Multi-label CSV found, but multi_labels.json is missing.\n"
@@ -760,7 +748,6 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     #         self.updateButtonStates()
 
     def syncModeUI(self):
-        """Rende coerenti: label_mode, tab attiva, tab disabilitata."""
         if not hasattr(self.ui, "SingleTab"):
             return
 
@@ -882,7 +869,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         return True
 
     def onNextPatientMultiLabelClicked(self):
-        """Passa al paziente successivo (modalità multi-label)."""
+        """Next patient (multi-label)."""
         if getattr(self, "inRandomView", False):
             self.onLoadNextRandomPatient()
             return
@@ -930,97 +917,100 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.updateButtonStates()
 
     def generateClassButtons(self):
-            """Remove all existing elements and regenerate the classification buttons for Single-Label."""
-            from ClassAnnotationLib.ClassAnnotationUIUtils import getMainColor, getDarkerColor, getLighterColor
-            
-            # --- RESET TABLE TO SINGLE-LABEL STRUCTURE ---
-            t = self.ui.classificationTable
-            t.clear()
-            t.setColumnCount(2)
-            t.setHorizontalHeaderLabels(["Patient ID", "Class"])
-            t.horizontalHeader().setSectionResizeMode(qt.QHeaderView.Stretch)
-            
-            # Set logic mode to single
-            self.logic.label_mode = SINGLE_LABEL
-            self.updateTable()
+        """Remove all existing elements and regenerate the classification buttons for Single-Label."""
+        from ClassAnnotationLib.ClassAnnotationUIUtils import getMainColor, getDarkerColor, getLighterColor
 
-            # --- GRAPHICAL BUTTON GENERATION ---
-            numClasses = self.ui.classCountInput.value  
-            classificationLayout = self.ui.classificationGroupBox.layout()
+        # --- RESET TABLE TO SINGLE-LABEL STRUCTURE ---
+        t = self.ui.classificationTable
+        t.clear()
+        t.setColumnCount(2)
+        t.setHorizontalHeaderLabels(["Patient ID", "Class"])
+        t.horizontalHeader().setSectionResizeMode(qt.QHeaderView.Stretch)
 
-            if classificationLayout is None:
-                classificationLayout = qt.QVBoxLayout()
-                self.ui.classificationGroupBox.setLayout(classificationLayout)
+        # Set logic mode to single
+        self.logic.label_mode = SINGLE_LABEL
+        self.updateTable()
 
-            # Clear existing layout
-            def clearLayout(layout):
-                while layout.count():
-                    item = layout.takeAt(0)
-                    w = item.widget()
-                    l = item.layout()
-                    if w:
-                        w.setParent(None)
-                        w.deleteLater()
-                    elif l:
-                        clearLayout(l)
-            clearLayout(classificationLayout)
+        # --- GRAPHICAL BUTTON GENERATION ---
+        numClasses = self.ui.classCountInput.value
+        classificationLayout = self.ui.classificationGroupBox.layout()
 
-            self.classButtons.clear()
-            self.classLCDs.clear()
+        if classificationLayout is None:
+            classificationLayout = qt.QVBoxLayout()
+            self.ui.classificationGroupBox.setLayout(classificationLayout)
+
+        def clearLayout(layout):
+            while layout.count():
+                item = layout.takeAt(0)
+                w = item.widget()
+                l = item.layout()
+                if w:
+                    w.setParent(None)
+                    w.deleteLater()
+                elif l:
+                    clearLayout(l)
+
+        clearLayout(classificationLayout)
+
+        self.classButtons.clear()
+        self.classLCDs.clear()
+
+        if not self.datasetPath or not os.path.isdir(self.datasetPath):
+            self.classCounters = {}
+            classNamesFromCSV = {}
+        else:
             self.classCounters = self.logic.countPatientsPerClassFromCSV(self.datasetPath, self.outputPath)
-
-            gridLayout = qt.QGridLayout()
-            gridLayout.setSpacing(5)
-            
-            headerLabel = qt.QLabel("Current Cases per Class")
-            headerLabel.setAlignment(qt.Qt.AlignCenter)
-            headerLabel.setStyleSheet("font-size: 12px; font-weight: bold;")
-            gridLayout.addWidget(headerLabel, 0, 1)
-
             _, classNamesFromCSV = self.logic.loadExistingCSV(self.datasetPath, self.outputPath)
 
-            for classLabel in range(numClasses):
-                row = classLabel + 1  
-                defaultName = f"Class {classLabel}"
-                customName = classNamesFromCSV.get(classLabel, defaultName)
-                button = qt.QPushButton(customName)
+        gridLayout = qt.QGridLayout()
+        gridLayout.setSpacing(5)
 
-                # button = qt.QPushButton(f"Class {classLabel}")
-                button.setStyleSheet(f"""
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
-                                stop:0 {getLighterColor(classLabel)}, 
-                                stop:0.5 {getMainColor(classLabel)}, 
-                                stop:1 {getDarkerColor(classLabel)});
-                    color: black;
-                    font-weight: bold;
-                    font-size: 14px;
-                    padding: 6px;
-                    border-radius: 6px;
-                    border: 1px solid #555;
-                    box-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
-                """)
-                button.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Fixed)
-                button.setMinimumHeight(30)
-                button.clicked.connect(lambda _, lbl=classLabel: self.onClassifyImage(lbl))
-                self.classButtons[classLabel] = button
+        headerLabel = qt.QLabel("Current Cases per Class")
+        headerLabel.setAlignment(qt.Qt.AlignCenter)
+        headerLabel.setStyleSheet("font-size: 12px; font-weight: bold;")
+        gridLayout.addWidget(headerLabel, 0, 1)
 
-                lcdCounter = qt.QLCDNumber()
-                lcdCounter.setDigitCount(2)
-                lcdCounter.display(self.classCounters.get(classLabel, 0))  
-                lcdCounter.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Fixed)
-                lcdCounter.setMinimumHeight(30)
-                self.classLCDs[classLabel] = lcdCounter
+        for classLabel in range(numClasses):
+            row = classLabel + 1
+            defaultName = f"Class {classLabel}"
+            customName = classNamesFromCSV.get(classLabel, defaultName)
+            button = qt.QPushButton(customName)
 
-                gridLayout.addWidget(button, row, 0)
-                gridLayout.addWidget(lcdCounter, row, 1)
+            button.setStyleSheet(f"""
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                            stop:0 {getLighterColor(classLabel)}, 
+                            stop:0.5 {getMainColor(classLabel)}, 
+                            stop:1 {getDarkerColor(classLabel)});
+                color: black;
+                font-weight: bold;
+                font-size: 14px;
+                padding: 6px;
+                border-radius: 6px;
+                border: 1px solid #555;
+                box-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
+            """)
+            button.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Fixed)
+            button.setMinimumHeight(30)
+            button.clicked.connect(lambda _, lbl=classLabel: self.onClassifyImage(lbl))
+            self.classButtons[classLabel] = button
 
-            classificationLayout.addLayout(gridLayout)
+            lcdCounter = qt.QLCDNumber()
+            lcdCounter.setDigitCount(2)
+            lcdCounter.display(self.classCounters.get(classLabel, 0))
+            lcdCounter.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Fixed)
+            lcdCounter.setMinimumHeight(30)
+            self.classLCDs[classLabel] = lcdCounter
 
-            self.ui.classificationGroupBox.setLayout(classificationLayout)
-            self.ui.classificationGroupBox.update()
+            gridLayout.addWidget(button, row, 0)
+            gridLayout.addWidget(lcdCounter, row, 1)
+
+        classificationLayout.addLayout(gridLayout)
+
+        self.ui.classificationGroupBox.setLayout(classificationLayout)
+        self.ui.classificationGroupBox.update()
 
     def clearMultiButtonsSelection(self):
-        """Deseleziona TUTTI i bottoni della UI multi-label."""
+
         if not hasattr(self, "multiLabelButtons") or not isinstance(self.multiLabelButtons, dict):
             return
         for feature, btns in self.multiLabelButtons.items():
@@ -1459,7 +1449,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
 
     def syncTabsWithTopMode(self):
-        """Se Single è attivo: mostra tab 0 e disabilita tab 1. Viceversa per Multi."""
+   
         if not hasattr(self.ui, "SingleTab"):
             return
 
@@ -1476,10 +1466,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
 
     def syncLoadedPatientFromViewer(self):
-        """
-        Prova a recuperare un nodo visualizzabile dalla scena (volume o labelmap),
-        e ricava currentPatientID dal nome.
-        """
+
         self.loadedPatients = []
         node = None
 
@@ -2593,7 +2580,6 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         dd.clear()
         dd.addItem("-")
 
-        # SOLO features dal json (multi_labels.json)
         feats = []
         if isinstance(self.multiClassNames, dict) and self.multiClassNames:
             feats = sorted(list(self.multiClassNames.keys()))
@@ -2607,7 +2593,7 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if not hasattr(self.ui, "featureReviewDropdown"):
             return ""
         f = self.ui.featureReviewDropdown.currentText
-        if callable(f):  # compat PythonQt
+        if callable(f):  
             f = f()
         f = (f or "").strip()
         return "" if f == "-" else f
@@ -2677,13 +2663,36 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
 
     def isFlatDataset(self, datasetPath: str) -> bool:
         """Checks if the dataset is flat (all files are in the main folder)."""
-        files = [f for f in os.listdir(datasetPath) if os.path.isfile(os.path.join(datasetPath, f)) and not f.startswith('.') and f != 'classification_results.csv']
+        if not datasetPath or not os.path.isdir(datasetPath):
+            return False
+
+        files = [
+            f for f in os.listdir(datasetPath)
+            if os.path.isfile(os.path.join(datasetPath, f))
+            and not f.startswith('.')
+            and f != 'classification_results.csv'
+        ]
         return any(f.lower().endswith(tuple(SUPPORTED_FORMATS)) for f in files)
 
     def isHierarchicalDataset(self, datasetPath: str) -> bool:
         """Checks if the dataset is hierarchical (each patient has a folder)."""
-        subdirs = [d for d in os.listdir(datasetPath) if os.path.isdir(os.path.join(datasetPath, d))]
-        return any(any(f.lower().endswith(tuple(SUPPORTED_FORMATS)) for f in os.listdir(os.path.join(datasetPath, d))) for d in subdirs)
+        if not datasetPath or not os.path.isdir(datasetPath):
+            return False
+
+        subdirs = [
+            d for d in os.listdir(datasetPath)
+            if os.path.isdir(os.path.join(datasetPath, d))
+            and d.lower() != OUTPUT_FOLDER
+            and not d.startswith('.')
+        ]
+
+        return any(
+            any(
+                f.lower().endswith(tuple(SUPPORTED_FORMATS))
+                for f in os.listdir(os.path.join(datasetPath, d))
+            )
+            for d in subdirs
+        )
 
     def loadExistingPatientsFromCSV(self, csvFilePath: str) -> dict:
         existingPatients = {}
@@ -3266,7 +3275,7 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
         self._cleanupEmptyDirs(base)
 
     def _cleanupEmptyDirs(self, rootDir: str):
-        """Rimuove ricorsivamente directory vuote."""
+
         for dirpath, dirnames, filenames in os.walk(rootDir, topdown=False):
             visible_files = [f for f in filenames if not f.startswith(".")]
             visible_dirs = [d for d in dirnames if not d.startswith(".")]
@@ -3419,16 +3428,23 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
 
         self.saveMultiCSV(datasetPath, outputPath, multiDict, feature_names)
 
-        
+            
     def getAllPatientIDs(self, datasetPath: str) -> List[str]:
         """Retrieves all patient IDs in the dataset, including unclassified ones."""
-        from ClassAnnotationLib.ClassAnnotationUtils import extract_patient_id_from_name  
-    
+        from ClassAnnotationLib.ClassAnnotationUtils import extract_patient_id_from_name
+
+        if not datasetPath or not os.path.isdir(datasetPath):
+            return []
+
         patientIDs = set()
 
         if self.isHierarchicalDataset(datasetPath):
-            patientIDs = {d for d in os.listdir(datasetPath) if os.path.isdir(os.path.join(datasetPath, d)) 
-                        and d.lower() != OUTPUT_FOLDER and not d.startswith('.')}
+            patientIDs = {
+                d for d in os.listdir(datasetPath)
+                if os.path.isdir(os.path.join(datasetPath, d))
+                and d.lower() != OUTPUT_FOLDER
+                and not d.startswith('.')
+            }
 
         elif self.isFlatDataset(datasetPath):
             allFiles = [
@@ -3441,7 +3457,7 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
             for fileName in allFiles:
                 patientID = extract_patient_id_from_name(fileName)
                 patientIDs.add(patientID)
-        
+
         return sorted(patientIDs)
     
 
@@ -3526,10 +3542,7 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
                                 feature_name: str,
                                 multiDict: dict,
                                 feature_names: List[str]):
-        """
-        Ricostruisce outDir/multi_label/<feature_name>/...
-        eliminando la vecchia cartella della feature e ricreandola dal multiDict attuale.
-        """
+
         outDir = self._baseOutputDir(datasetPath, outputPath)
         base = os.path.join(outDir, "multi_label")
         featureDir = os.path.join(base, feature_name.replace(" ", "_").replace("/", "_"))
@@ -3607,10 +3620,7 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
         return s.replace(" ", "_").replace("/", "_").replace("\\", "_")
 
     def cleanupSingleClassFolders(self, datasetPath: str, outputPath: str, singleDict: dict, classIdToName: dict):
-        """
-        Elimina cartelle di classe residue in outDir/output/.
-        Cancella solo directory che sembrano class-folder.
-        """
+
         outDir = self._baseOutputDir(datasetPath, outputPath)
         if not os.path.isdir(outDir):
             return
