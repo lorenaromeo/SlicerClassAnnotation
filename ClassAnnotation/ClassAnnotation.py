@@ -468,6 +468,11 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             return
 
         feature = self.ui.DeleteFeatureDropdown.currentText
+        if callable(feature):
+            feature = feature()
+
+        feature = (feature or "").strip()
+
         if not feature or feature == "-":
             slicer.util.warningDisplay(
                 "Select a feature to delete.",
@@ -475,27 +480,94 @@ class ClassAnnotationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             )
             return
 
-        if self.logic.isMultiFeatureUsed(self.datasetPath, self.outputPath, feature):
-            slicer.util.warningDisplay(
-                f"⚠️ Cannot delete '{feature}': at least one patient already has a value.",
-                windowTitle="Feature in use"
-            )
-            return
-
-        table = self.ui.MultiLabeltable
-        for r in range(table.rowCount):
-            item = table.item(r, 0)
-            if item and item.text().strip() == feature:
-                table.removeRow(r)
-                break
-
-        self.generateMultiLabelClassButtons()
-
-        slicer.util.infoDisplay(
-            f"Feature '{feature}' deleted.",
-            windowTitle="Deleted"
+        confirmation = qt.QMessageBox()
+        confirmation.setIcon(qt.QMessageBox.Warning)
+        confirmation.setWindowTitle("Delete Feature")
+        confirmation.setText(
+            f"Are you sure you want to permanently delete '{feature}'?"
+        )
+        confirmation.setInformativeText(
+            "This operation will permanently remove:\n\n"
+            "• the feature column from the multi-label CSV;\n"
+            "• all values assigned to this feature;\n"
+            "• the feature from multi_labels.json;\n"
+            "• all folders associated with this feature.\n\n"
+            "This action cannot be undone."
         )
 
+        deleteButton = confirmation.addButton(
+            "Delete",
+            qt.QMessageBox.DestructiveRole
+        )
+        cancelButton = confirmation.addButton(
+            qt.QMessageBox.Cancel
+        )
+
+        confirmation.setDefaultButton(cancelButton)
+        confirmation.setEscapeButton(cancelButton)
+        confirmation.exec_()
+
+        if confirmation.clickedButton() != deleteButton:
+            return
+
+        try:
+            remaining_features = self.logic.deleteMultiFeatureEverywhere(
+                self.datasetPath,
+                self.outputPath,
+                feature,
+                self.multiClassification,
+                self.multiClassNames,
+                self.getGeneratedFeatureNames()
+            )
+
+            for pid, features in self.multiClassification.items():
+                if isinstance(features, dict):
+                    features.pop(feature, None)
+
+            if isinstance(self.multiClassNames, dict):
+                self.multiClassNames.pop(feature, None)
+
+            self.multiFeatureNames = list(remaining_features)
+
+            if hasattr(self, "featureMeta") and isinstance(self.featureMeta, dict):
+                self.featureMeta.pop(feature, None)
+
+            table = self.ui.MultiLabeltable
+            for row in range(table.rowCount):
+                item = table.item(row, 0)
+                if item and item.text().strip() == feature:
+                    table.removeRow(row)
+                    break
+
+            if hasattr(self, "multiLabelButtons"):
+                self.multiLabelButtons.pop(feature, None)
+
+            self.reloadStateFromCSVs()
+            self.multiClassNames = self.logic.loadMultiLabels(
+                self.datasetPath,
+                self.outputPath
+            )
+
+            self.restoreMultiUIFromSavedState()
+            self.generateMultiLabelClassButtons()
+
+            self.populateDeleteFeatureDropdown()
+            self.populateFeatureReviewDropdown()
+            self.populatePatientDropdown()
+            self.updateTable()
+            self.updateButtonStates()
+
+            slicer.util.infoDisplay(
+                f"Feature '{feature}' was permanently deleted.",
+                windowTitle="Feature Deleted"
+            )
+
+        except Exception as e:
+            slicer.util.errorDisplay(
+                f"Failed to delete feature '{feature}'.\n\n{str(e)}",
+                windowTitle="Delete Feature Error"
+            )
+            
     def _qt_get_value(self, w, default=0):
         """Compat PythonQt: supporta sia w.value che w.value()"""
         if w is None:
@@ -3691,3 +3763,88 @@ class ClassAnnotationLogic(ScriptedLoadableModuleLogic):
             print(f"[ERROR] Failed to read canonical multi CSV hashes: {e}")
 
         return hashes
+    
+    def deleteMultiFeatureEverywhere(
+        self,
+        datasetPath: str,
+        outputPath: str,
+        feature_name: str,
+        multiDict: dict,
+        multiClassNames: dict,
+        feature_names: List[str]
+    ) -> List[str]:
+
+        import re
+
+        feature_name = (feature_name or "").strip()
+        if not feature_name:
+            raise ValueError("Feature name is empty.")
+
+        remaining_features = [
+            feature
+            for feature in feature_names
+            if str(feature).strip() != feature_name
+        ]
+
+        csvPath = self._multiCsvPath(datasetPath, outputPath)
+
+        if os.path.exists(csvPath):
+            with open(csvPath, mode="r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                csv_features = [
+                    column
+                    for column in (reader.fieldnames or [])
+                    if column not in ("Patient ID", "Hash")
+                ]
+
+            remaining_features = [
+                column
+                for column in csv_features
+                if column != feature_name
+            ]
+
+        if isinstance(multiDict, dict):
+            for patientFeatures in multiDict.values():
+                if isinstance(patientFeatures, dict):
+                    patientFeatures.pop(feature_name, None)
+
+        if isinstance(multiClassNames, dict):
+            multiClassNames.pop(feature_name, None)
+
+        self.saveMultiCSV(
+            datasetPath,
+            outputPath,
+            multiDict,
+            remaining_features
+        )
+
+        self.saveMultiLabels(
+            datasetPath,
+            outputPath,
+            multiClassNames,
+            overwrite=True
+        )
+
+        def safe_name(value: str) -> str:
+            value = (value or "").strip()
+            value = (
+                value.replace(" ", "_")
+                    .replace("/", "_")
+                    .replace("\\", "_")
+            )
+            value = re.sub(r"[^\w\-\u00C0-\u017F]+", "", value)
+            return value if value else "NA"
+
+        outDir = self._baseOutputDir(datasetPath, outputPath)
+        featureDir = os.path.join(
+            outDir,
+            "multi_label",
+            safe_name(feature_name)
+        )
+
+        if os.path.isdir(featureDir):
+            shutil.rmtree(featureDir)
+
+        self._cleanupEmptyDirs(os.path.join(outDir, "multi_label"))
+
+        return remaining_features
